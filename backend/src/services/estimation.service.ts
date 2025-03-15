@@ -169,3 +169,142 @@ export class EstimationService {
       throw error;
     }
   }
+
+  /**
+   * Get latest estimate for a project
+   * 
+   * @param projectId - Project ID
+   * @returns Latest estimate
+   */
+  async getLatestEstimate(projectId: string): Promise<IEstimate | null> {
+    try {
+      const result = await this.docClient.send(new QueryCommand({
+        TableName: config.dynamodb.tables.estimates,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+        ExpressionAttributeValues: {
+          ':pk': `PROJECT#${projectId}`,
+          ':sk': 'ESTIMATE#'
+        },
+        ScanIndexForward: false, // Return in descending order (newest first)
+        Limit: 1
+      }));
+
+      if (!result.Items || result.Items.length === 0) {
+        return null;
+      }
+
+      return result.Items[0] as IEstimate;
+    } catch (error) {
+      this.logger.error('Error getting latest estimate', { error, projectId });
+      throw error;
+    }
+  }
+
+  /**
+   * Get all estimates for a project
+   * 
+   * @param projectId - Project ID
+   * @returns List of estimates
+   */
+  async getProjectEstimates(projectId: string): Promise<IEstimate[]> {
+    try {
+      const result = await this.docClient.send(new QueryCommand({
+        TableName: config.dynamodb.tables.estimates,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+        ExpressionAttributeValues: {
+          ':pk': `PROJECT#${projectId}`,
+          ':sk': 'ESTIMATE#'
+        },
+        ScanIndexForward: false // Return in descending order (newest first)
+      }));
+
+      return (result.Items || []) as IEstimate[];
+    } catch (error) {
+      this.logger.error('Error getting project estimates', { error, projectId });
+      throw error;
+    }
+  }
+
+  /**
+   * Update an estimate
+   * 
+   * @param projectId - Project ID
+   * @param estimateId - Estimate ID
+   * @param updateData - Data to update
+   * @param userId - User ID performing the update
+   * @returns Updated estimate
+   */
+  async updateEstimate(
+    projectId: string,
+    estimateId: string,
+    updateData: Partial<IEstimate>,
+    userId: string
+  ): Promise<IEstimate | null> {
+    try {
+      // Get current estimate
+      const estimate = await this.getEstimate(projectId, estimateId);
+      if (!estimate) {
+        throw new Error('Estimate not found');
+      }
+
+      // Don't allow updating approved estimates
+      if (estimate.status === 'approved') {
+        throw new Error('Cannot update an approved estimate');
+      }
+
+      // Calculate totals if rooms or phases are updated
+      let totalLaborHours = estimate.totalLaborHours;
+      let totalMaterialCost = estimate.totalMaterialCost;
+      let totalCost = estimate.totalCost;
+
+      if (updateData.rooms) {
+        const totals = this.calculateTotals(updateData.rooms, updateData.phases || estimate.phases);
+        totalLaborHours = totals.totalLaborHours;
+        totalMaterialCost = totals.totalMaterialCost;
+        totalCost = totals.totalCost;
+      }
+
+      // Create updated estimate
+      const updatedEstimate: IEstimate = {
+        ...estimate,
+        ...updateData,
+        totalLaborHours,
+        totalMaterialCost,
+        totalCost,
+        updated: new Date().toISOString(),
+        updatedBy: userId
+      };
+
+      // Save to DynamoDB
+      await this.docClient.send(new UpdateCommand({
+        TableName: config.dynamodb.tables.estimates,
+        Key: {
+          PK: `PROJECT#${projectId}`,
+          SK: `ESTIMATE#${estimateId}`
+        },
+        UpdateExpression: 'set #status = :status, #version = :version, totalLaborHours = :totalLaborHours, ' +
+          'totalMaterialCost = :totalMaterialCost, totalCost = :totalCost, ' +
+          'phases = :phases, rooms = :rooms, updated = :updated, updatedBy = :updatedBy',
+        ExpressionAttributeNames: {
+          '#status': 'status',
+          '#version': 'version'
+        },
+        ExpressionAttributeValues: {
+          ':status': updatedEstimate.status,
+          ':version': updatedEstimate.version,
+          ':totalLaborHours': updatedEstimate.totalLaborHours,
+          ':totalMaterialCost': updatedEstimate.totalMaterialCost,
+          ':totalCost': updatedEstimate.totalCost,
+          ':phases': updatedEstimate.phases,
+          ':rooms': updatedEstimate.rooms,
+          ':updated': updatedEstimate.updated,
+          ':updatedBy': updatedEstimate.updatedBy
+        }
+      }));
+
+      return updatedEstimate;
+    } catch (error) {
+      this.logger.error('Error updating estimate', { error, projectId, estimateId });
+      throw error;
+    }
+  }
