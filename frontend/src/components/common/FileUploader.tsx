@@ -67,48 +67,53 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
       case FileType.PHOTO:
         return { 'image/*': ['.jpg', '.jpeg', '.png', '.gif'] };
       case FileType.RECEIPT:
-        return { 'application/pdf': ['.pdf'], 'image/*': ['.jpg', '.jpeg', '.png'] };
+        return { 
+          'application/pdf': ['.pdf'],
+          'image/*': ['.jpg', '.jpeg', '.png']
+        };
       case FileType.DOCUMENT:
-        return {
+      case FileType.ATTACHMENT:
+      default:
+        return { 
           'application/pdf': ['.pdf'],
           'application/msword': ['.doc'],
           'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
           'application/vnd.ms-excel': ['.xls'],
-          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx']
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+          'text/plain': ['.txt'],
+          'image/*': ['.jpg', '.jpeg', '.png']
         };
-      default:
-        return { 'application/octet-stream': ['*'] };
     }
   }, [fileType]);
 
-  // Handle file uploads
-  const uploadFiles = useCallback(async (files: File[]) => {
-    if (files.length === 0) return;
+  // Update progress for a specific file
+  const handleProgress = useCallback((file: File, progress: number) => {
+    setUploadProgress(prev => ({
+      ...prev,
+      [file.name]: progress
+    }));
+  }, []);
 
+  // Handle file upload
+  const handleUpload = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
+    
     setIsUploading(true);
     setError(null);
     onUploadStart?.();
-
-    const uploadedFilesList: IFileMetadata[] = [];
-    const newProgress: Record<string, number> = {};
-
-    // Initialize progress tracking
-    files.forEach(file => {
-      newProgress[file.name] = 0;
-    });
-    setUploadProgress(newProgress);
-
-    // Upload each file
-    for (const file of files) {
-      try {
-        const updateProgress = (progress: number) => {
-          setUploadProgress(prev => ({
-            ...prev,
-            [file.name]: progress
-          }));
-        };
-
-        const fileMetadata = await fileService.uploadFile(
+    
+    const uploadedItems: IFileMetadata[] = [];
+    
+    try {
+      for (const file of files) {
+        // Initialize progress
+        setUploadProgress(prev => ({
+          ...prev,
+          [file.name]: 0
+        }));
+        
+        // Upload file
+        const fileData = await fileService.uploadFile(
           file,
           projectId,
           fileType,
@@ -116,128 +121,184 @@ export const FileUploader: React.FC<FileUploaderProps> = ({
           tags,
           entityId,
           entityType,
-          updateProgress
+          progress => handleProgress(file, progress)
         );
-
-        uploadedFilesList.push(fileMetadata);
-        toast.success(`${file.name} uploaded successfully`);
-      } catch (err) {
-        console.error(`Error uploading ${file.name}:`, err);
-        toast.error(`Failed to upload ${file.name}`);
-        setError(`Failed to upload ${file.name}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        
+        uploadedItems.push(fileData);
       }
+      
+      setUploadedFiles(prev => [...prev, ...uploadedItems]);
+      
+      if (uploadedItems.length > 0) {
+        toast.success(`${uploadedItems.length} file(s) uploaded successfully`);
+        onUploadComplete?.(uploadedItems);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred during upload');
+      toast.error('Upload failed');
+    } finally {
+      setIsUploading(false);
     }
+  }, [projectId, fileType, description, tags, entityId, entityType, onUploadStart, onUploadComplete, handleProgress]);
 
-    setUploadedFiles(prev => [...prev, ...uploadedFilesList]);
-    setIsUploading(false);
-
-    if (uploadedFilesList.length > 0 && onUploadComplete) {
-      onUploadComplete(uploadedFilesList);
-    }
-  }, [projectId, fileType, description, tags, entityId, entityType, onUploadComplete, onUploadStart]);
-
-  // Configure dropzone
+  // Dropzone configuration
   const { getRootProps, getInputProps, isDragActive, fileRejections } = useDropzone({
-    onDrop: uploadFiles,
+    onDrop: handleUpload,
     accept: accept || getDefaultAccept(),
     maxSize,
     multiple,
     disabled: isUploading
   });
 
-  // Remove an uploaded file
-  const removeFile = (index: number) => {
-    setUploadedFiles(prev => prev.filter((_, i) => i !== index));
+  // Handle rejection errors
+  const fileRejectionItems = fileRejections.map(({ file, errors }) => (
+    <div key={file.name} className="text-sm text-red-500">
+      <p className="font-medium">{file.name}</p>
+      <ul className="mt-1 list-disc pl-5">
+        {errors.map(e => (
+          <li key={e.code}>{e.message}</li>
+        ))}
+      </ul>
+    </div>
+  ));
+
+  // Clear a specific uploaded file
+  const clearUploadedFile = (fileId: string) => {
+    setUploadedFiles(prev => prev.filter(file => file.fileId !== fileId));
   };
 
   return (
-    <div className={className}>
+    <div className={`space-y-4 ${className}`}>
       {/* Dropzone */}
       <div
         {...getRootProps()}
-        className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors
+        className={`
+          border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors
           ${isDragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-blue-400'}
           ${isUploading ? 'pointer-events-none opacity-60' : ''}
         `}
       >
         <input {...getInputProps()} />
-        
         <Upload className="mx-auto h-12 w-12 text-gray-400" />
         <p className="mt-2 text-sm text-gray-600">
-          {isDragActive
-            ? 'Drop the files here...'
-            : `Drag and drop ${fileType} ${multiple ? 'files' : 'file'}, or click to select`}
+          Drag and drop {fileType} {multiple ? 'files' : 'file'}, or click to select
         </p>
         <p className="text-xs text-gray-500 mt-1">
-          Maximum file size: {Math.round(maxSize / (1024 * 1024))}MB
+          {getFileTypeDescription(fileType)}
         </p>
       </div>
 
-      {/* Error display */}
-      {(error || fileRejections.length > 0) && (
-        <div className="mt-4 p-3 bg-red-50 text-red-700 rounded-md text-sm">
-          {error && <p>{error}</p>}
-          {fileRejections.map(({ file, errors }) => (
-            <p key={file.name}>
-              {file.name}: {errors.map(e => e.message).join(', ')}
-            </p>
-          ))}
+      {/* Errors */}
+      {error && (
+        <div className="rounded-md bg-red-50 p-4 text-sm text-red-600">
+          {error}
         </div>
       )}
 
-      {/* Upload progress */}
-      {isUploading && Object.keys(uploadProgress).length > 0 && (
-        <div className="mt-4 space-y-2">
-          {Object.entries(uploadProgress).map(([fileName, progress]) => (
-            <div key={fileName} className="text-sm">
-              <div className="flex justify-between text-xs text-gray-500 mb-1">
-                <span className="truncate">{fileName}</span>
-                <span>{progress}%</span>
+      {fileRejections.length > 0 && (
+        <div className="rounded-md bg-red-50 p-4">
+          <div className="flex">
+            <AlertCircle className="h-5 w-5 text-red-400" />
+            <div className="ml-3">
+              <h3 className="text-sm font-medium text-red-800">
+                The following {fileRejections.length > 1 ? 'files were' : 'file was'} rejected:
+              </h3>
+              <div className="mt-2 text-sm text-red-700">
+                {fileRejectionItems}
               </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div
-                  className="bg-blue-500 h-2 rounded-full"
-                  style={{ width: `${progress}%` }}
-                />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Progress */}
+      {Object.keys(uploadProgress).length > 0 && isUploading && (
+        <div className="space-y-2">
+          {Object.entries(uploadProgress).map(([fileName, progress]) => (
+            <div key={fileName} className="rounded-md bg-gray-50 p-3">
+              <div className="flex items-center">
+                <FileText className="h-5 w-5 text-gray-400 mr-2" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900 truncate">
+                    {fileName}
+                  </p>
+                  <div className="mt-1 relative h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div 
+                      className="absolute left-0 top-0 h-full bg-blue-500" 
+                      style={{ width: `${progress}%` }}
+                    ></div>
+                  </div>
+                </div>
+                <span className="text-xs text-gray-500">{progress}%</span>
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Uploaded files */}
+      {/* Uploaded Files */}
       {uploadedFiles.length > 0 && (
-        <div className="mt-4">
-          <h4 className="text-sm font-medium text-gray-700 mb-2">Uploaded files</h4>
-          <ul className="space-y-2">
-            {uploadedFiles.map((file, index) => (
-              <li
-                key={file.fileId}
-                className="flex items-center justify-between p-2 bg-gray-50 rounded-md text-sm"
-              >
-                <div className="flex items-center">
-                  <FileText className="h-4 w-4 text-blue-500 mr-2" />
-                  <span className="truncate max-w-xs">{file.originalName}</span>
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium text-gray-700">Uploaded Files</h3>
+          {uploadedFiles.map((file) => (
+            <div key={file.fileId} className="rounded-md bg-gray-50 p-3 flex justify-between items-center">
+              <div className="flex items-center">
+                <FileText className="h-5 w-5 text-gray-400 mr-2" />
+                <div>
+                  <p className="text-sm font-medium text-gray-900">
+                    {file.originalName}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    {formatBytes(file.size)}
+                  </p>
                 </div>
-                <div className="flex items-center">
-                  <CheckCircle className="h-4 w-4 text-green-500 mr-2" />
-                  {multiple && (
-                    <button
-                      type="button"
-                      onClick={() => removeFile(index)}
-                      className="text-gray-400 hover:text-red-500"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
+              </div>
+              <div className="flex items-center">
+                <CheckCircle className="h-5 w-5 text-green-500 mr-2" />
+                <button 
+                  onClick={() => clearUploadedFile(file.fileId)}
+                  className="text-gray-400 hover:text-gray-500"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
 };
 
-export default FileUploader;
+/**
+ * Get descriptive text for file types
+ */
+function getFileTypeDescription(fileType: FileType): string {
+  switch (fileType) {
+    case FileType.BLUEPRINT:
+      return 'Accepted: PDF files (max 50MB)';
+    case FileType.PHOTO:
+      return 'Accepted: JPG, JPEG, PNG, GIF (max 50MB)';
+    case FileType.RECEIPT:
+      return 'Accepted: PDF, JPG, JPEG, PNG (max 50MB)';
+    case FileType.DOCUMENT:
+    case FileType.ATTACHMENT:
+    default:
+      return 'Accepted: PDF, DOCX, XLSX, JPG, PNG, TXT (max 50MB)';
+  }
+}
+
+/**
+ * Format bytes to human readable format
+ */
+function formatBytes(bytes: number, decimals = 2): string {
+  if (bytes === 0) return '0 Bytes';
+
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
