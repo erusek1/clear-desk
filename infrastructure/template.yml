@@ -1,0 +1,465 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Clear-Desk.com API Gateway and Lambda Functions for Project Management
+
+# Global parameters that can be referenced in other sections
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment to deploy to
+
+  DomainName:
+    Type: String
+    Default: api.clear-desk.com
+    Description: API domain name
+
+  CertificateArn:
+    Type: String
+    Default: ''
+    Description: SSL certificate ARN for the API domain
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: nodejs20.x
+    MemorySize: 256
+    Environment:
+      Variables:
+        NODE_ENV: !Ref Environment
+        AWS_REGION: !Ref AWS::Region
+        DYNAMODB_ENDPOINT: ""  # Set for local development
+
+  Api:
+    Cors:
+      AllowMethods: "'GET, POST, PUT, DELETE, OPTIONS'"
+      AllowHeaders: "'Content-Type, Authorization, X-Amz-Date, X-Api-Key, X-Amz-Security-Token'"
+      AllowOrigin: "'*'"
+    Auth:
+      DefaultAuthorizer: JwtAuthorizer
+      Authorizers:
+        JwtAuthorizer:
+          FunctionArn: !GetAtt AuthorizerFunction.Arn
+          Identity:
+            Header: Authorization
+            ValidationExpression: Bearer (.*)
+            ReauthorizeEvery: 300
+
+Resources:
+  # API Gateway
+  ClearDeskApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Environment
+      EndpointConfiguration: 
+        Type: REGIONAL
+      Domain:
+        DomainName: !Ref DomainName
+        CertificateArn: !Ref CertificateArn
+        Route53:
+          HostedZoneName: clear-desk.com.
+        EndpointConfiguration: REGIONAL
+        BasePath: /
+
+  # JWT Authorizer Lambda
+  AuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/functions/auth/jwt-authorizer.handler
+      Description: JWT authorizer function for API Gateway
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource: !GetAtt UsersTable.Arn
+
+  # Project Lambda Functions
+  CreateProjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/functions/projects/create-project.lambda.handler
+      Description: Lambda function to create a new project
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProjectsTable
+        - S3CrudPolicy:
+            BucketName: !Ref FilesBucket
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ClearDeskApi
+            Path: /projects
+            Method: POST
+
+  GetProjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/functions/projects/get-project.lambda.handler
+      Description: Lambda function to get a project by ID
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProjectsTable
+        - S3ReadPolicy:
+            BucketName: !Ref FilesBucket
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ClearDeskApi
+            Path: /projects/{projectId}
+            Method: GET
+
+  UpdateProjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/functions/projects/update-project.lambda.handler
+      Description: Lambda function to update a project
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProjectsTable
+        - S3CrudPolicy:
+            BucketName: !Ref FilesBucket
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ClearDeskApi
+            Path: /projects/{projectId}
+            Method: PUT
+
+  DeleteProjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/functions/projects/delete-project.lambda.handler
+      Description: Lambda function to delete a project
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProjectsTable
+        - S3CrudPolicy:
+            BucketName: !Ref FilesBucket
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ClearDeskApi
+            Path: /projects/{projectId}
+            Method: DELETE
+
+  GetCompanyProjectsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/functions/projects/get-company-projects.lambda.handler
+      Description: Lambda function to get all projects for a company
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProjectsTable
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ClearDeskApi
+            Path: /companies/{companyId}/projects
+            Method: GET
+
+  UpdateProjectStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/functions/projects/update-project-status.lambda.handler
+      Description: Lambda function to update project status
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProjectsTable
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ClearDeskApi
+            Path: /projects/{projectId}/status
+            Method: PUT
+
+  GetProjectDashboardFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/functions/projects/get-project-dashboard.lambda.handler
+      Description: Lambda function to get project dashboard data
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProjectsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CommentsTable
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ClearDeskApi
+            Path: /projects/{projectId}/dashboard
+            Method: GET
+
+  # Project Members Lambda Functions
+  AddProjectMemberFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/functions/projects/add-project-member.lambda.handler
+      Description: Lambda function to add a member to a project
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProjectsTable
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ClearDeskApi
+            Path: /projects/{projectId}/members
+            Method: POST
+
+  RemoveProjectMemberFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/functions/projects/remove-project-member.lambda.handler
+      Description: Lambda function to remove a member from a project
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProjectsTable
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ClearDeskApi
+            Path: /projects/{projectId}/members/{memberId}
+            Method: DELETE
+
+  # Project Activities Lambda Functions
+  GetProjectActivitiesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/functions/projects/get-project-activities.lambda.handler
+      Description: Lambda function to get project activities
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProjectsTable
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ClearDeskApi
+            Path: /projects/{projectId}/activities
+            Method: GET
+
+  # Project Comments Lambda Functions
+  AddProjectCommentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../backend/
+      Handler: src/functions/projects/add-project-comment.lambda.handler
+      Description: Lambda function to add a comment to a project
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CommentsTable
+        - S3CrudPolicy:
+            BucketName: !Ref FilesBucket
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ClearDeskApi
+            Path: /projects/{projectId}/comments
+            Method: POST
+
+  # DynamoDB Tables
+  ProjectsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub clear-desk-${Environment}-projects
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+        - AttributeName: GSI2PK
+          AttributeType: S
+        - AttributeName: GSI2SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: GSI2
+          KeySchema:
+            - AttributeName: GSI2PK
+              KeyType: HASH
+            - AttributeName: GSI2SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub clear-desk-${Environment}-users
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  CommentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub clear-desk-${Environment}-comments
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # S3 Bucket for Files
+  FilesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub clear-desk-${Environment}-files
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+              - HEAD
+            AllowedOrigins:
+              - "*"
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: TransitionToStandardIA
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+      VersioningConfiguration:
+        Status: Enabled
+
+  # S3 Bucket Policy
+  FilesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FilesBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt ClearDeskApiRole.Arn
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: !Sub ${FilesBucket.Arn}/*
+
+  # API Gateway Role
+  ClearDeskApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+Outputs:
+  ApiEndpoint:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${ClearDeskApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/"
+
+  ApiDomain:
+    Description: "Custom API domain"
+    Value: !Sub "https://${DomainName}/"
+
+  ProjectsTableArn:
+    Description: "ARN of the Projects DynamoDB table"
+    Value: !GetAtt ProjectsTable.Arn
+
+  FilesBucketName:
+    Description: "Name of the S3 bucket for storing files"
+    Value: !Ref FilesBucket
