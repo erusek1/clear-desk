@@ -68,12 +68,25 @@ const config = {
       dailyReports: process.env.DAILY_REPORTS_TABLE || 'clear-desk-daily-reports',
       communications: process.env.COMMUNICATIONS_TABLE || 'clear-desk-communications',
       selections: process.env.SELECTIONS_TABLE || 'clear-desk-selections',
+      // New tables for inspection functionality
       inspectionChecklists: process.env.INSPECTION_CHECKLISTS_TABLE || 'clear-desk-inspection-checklists',
       inspectionTemplates: process.env.INSPECTION_TEMPLATES_TABLE || 'clear-desk-inspection-templates',
+      // Vehicle and employee case tables
+      vehicles: process.env.VEHICLES_TABLE || 'clear-desk-vehicles',
+      vehicleInventory: process.env.VEHICLE_INVENTORY_TABLE || 'clear-desk-vehicle-inventory',
+      vehicleInventoryTransactions: process.env.VEHICLE_INVENTORY_TRANSACTIONS_TABLE || 'clear-desk-vehicle-inventory-transactions',
+      vehicleInventoryChecks: process.env.VEHICLE_INVENTORY_CHECKS_TABLE || 'clear-desk-vehicle-inventory-checks',
+      vehicleInventoryTemplates: process.env.VEHICLE_INVENTORY_TEMPLATES_TABLE || 'clear-desk-vehicle-inventory-templates',
+      employeeCases: process.env.EMPLOYEE_CASES_TABLE || 'clear-desk-employee-cases',
+      caseInventory: process.env.CASE_INVENTORY_TABLE || 'clear-desk-case-inventory',
+      caseInventoryTransactions: process.env.CASE_INVENTORY_TRANSACTIONS_TABLE || 'clear-desk-case-inventory-transactions',
+      caseInventoryChecks: process.env.CASE_INVENTORY_CHECKS_TABLE || 'clear-desk-case-inventory-checks',
+      caseTemplates: process.env.CASE_TEMPLATES_TABLE || 'clear-desk-case-templates',
+      // Chatbot tables
       projectKnowledgeBase: process.env.PROJECT_KNOWLEDGE_BASE_TABLE || 'clear-desk-project-knowledge-base',
-      privateNotes: process.env.PRIVATE_NOTES_TABLE || 'clear-desk-private-notes',
       chatThreads: process.env.CHAT_THREADS_TABLE || 'clear-desk-chat-threads',
-      chatMessages: process.env.CHAT_MESSAGES_TABLE || 'clear-desk-chat-messages'
+      chatMessages: process.env.CHAT_MESSAGES_TABLE || 'clear-desk-chat-messages',
+      privateNotes: process.env.PRIVATE_NOTES_TABLE || 'clear-desk-private-notes'
     }
   },
 
