@@ -5,6 +5,7 @@ import { MongoClient } from 'mongodb';
 import { v4 as uuidv4 } from 'uuid';
 import { Logger } from '../utils/logger';
 import config from '../config';
+import { SendGridService } from './sendgrid.service';
 import { 
   IEstimate, 
   IEstimateRoom, 
@@ -14,7 +15,7 @@ import {
   IMaterialTakeoffItem,
   IEstimateComparison
 } from '../types/estimation.types';
-import { IAssembly, IMaterial } from '../types/blueprint.types';
+import { IAssembly, IMaterial, IRoomDevice } from '../types/blueprint.types';
 
 /**
  * Service for managing electrical estimates and takeoffs
@@ -24,11 +25,13 @@ export class EstimationService {
   private mongoClient: MongoClient | null = null;
   private assemblyCollection: any = null;
   private materialCollection: any = null;
+  private sendGridService: SendGridService;
 
   constructor(
     private docClient: DynamoDBDocumentClient
   ) {
     this.logger = new Logger('EstimationService');
+    this.sendGridService = new SendGridService();
     this.initMongo();
   }
 
