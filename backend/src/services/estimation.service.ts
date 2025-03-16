@@ -331,3 +331,302 @@ export class EstimationService {
       throw error;
     }
   }
+
+  /**
+   * Submit estimate for approval
+   * 
+   * @param projectId - Project ID
+   * @param estimateId - Estimate ID
+   * @param userId - User ID submitting the estimate
+   * @returns Updated estimate
+   */
+  async submitEstimateForApproval(
+    projectId: string,
+    estimateId: string,
+    userId: string
+  ): Promise<IEstimate | null> {
+    try {
+      // Get current estimate
+      const currentEstimate = await this.getEstimate(projectId, estimateId);
+      if (!currentEstimate) {
+        throw new Error('Estimate not found');
+      }
+
+      // Check if estimate is in draft status
+      if (currentEstimate.status !== 'draft') {
+        throw new Error('Only draft estimates can be submitted for approval');
+      }
+
+      // Update the estimate status
+      const result = await this.docClient.send(new UpdateCommand({
+        TableName: config.dynamodb.tables.estimates,
+        Key: {
+          PK: `PROJECT#${projectId}`,
+          SK: `ESTIMATE#${estimateId}`
+        },
+        UpdateExpression: 'set #status = :status, updated = :updated, updatedBy = :updatedBy',
+        ExpressionAttributeNames: {
+          '#status': 'status'
+        },
+        ExpressionAttributeValues: {
+          ':status': 'pending',
+          ':updated': new Date().toISOString(),
+          ':updatedBy': userId
+        },
+        ReturnValues: 'ALL_NEW'
+      }));
+
+      const updatedEstimate = result.Attributes as IEstimate;
+
+      // Send email notification to approver(s)
+      await this.sendEstimateApprovalRequest(projectId, estimateId, updatedEstimate);
+
+      return updatedEstimate;
+    } catch (error) {
+      this.logger.error('Error submitting estimate for approval', { error, projectId, estimateId });
+      throw error;
+    }
+  }
+
+  /**
+   * Approve an estimate
+   * 
+   * @param projectId - Project ID
+   * @param estimateId - Estimate ID
+   * @param userId - User ID approving the estimate
+   * @returns Approved estimate
+   */
+  async approveEstimate(
+    projectId: string,
+    estimateId: string,
+    userId: string
+  ): Promise<IEstimate | null> {
+    try {
+      // Get current estimate
+      const currentEstimate = await this.getEstimate(projectId, estimateId);
+      if (!currentEstimate) {
+        throw new Error('Estimate not found');
+      }
+
+      // Check if estimate is in pending status
+      if (currentEstimate.status !== 'pending') {
+        throw new Error('Only pending estimates can be approved');
+      }
+
+      const now = new Date().toISOString();
+
+      // Update the estimate status
+      const result = await this.docClient.send(new UpdateCommand({
+        TableName: config.dynamodb.tables.estimates,
+        Key: {
+          PK: `PROJECT#${projectId}`,
+          SK: `ESTIMATE#${estimateId}`
+        },
+        UpdateExpression: 'set #status = :status, approvedDate = :approvedDate, approvedBy = :approvedBy, updated = :updated, updatedBy = :updatedBy',
+        ExpressionAttributeNames: {
+          '#status': 'status'
+        },
+        ExpressionAttributeValues: {
+          ':status': 'approved',
+          ':approvedDate': now,
+          ':approvedBy': userId,
+          ':updated': now,
+          ':updatedBy': userId
+        },
+        ReturnValues: 'ALL_NEW'
+      }));
+
+      const approvedEstimate = result.Attributes as IEstimate;
+
+      // Generate materials takeoff for the approved estimate
+      await this.createMaterialsTakeoff(projectId, estimateId, userId);
+
+      // Send notification that estimate was approved
+      await this.sendEstimateApprovedNotification(projectId, estimateId, approvedEstimate);
+
+      return approvedEstimate;
+    } catch (error) {
+      this.logger.error('Error approving estimate', { error, projectId, estimateId });
+      throw error;
+    }
+  }
+
+  /**
+   * Reject an estimate
+   * 
+   * @param projectId - Project ID
+   * @param estimateId - Estimate ID
+   * @param userId - User ID rejecting the estimate
+   * @param reason - Reason for rejection
+   * @returns Rejected estimate
+   */
+  async rejectEstimate(
+    projectId: string,
+    estimateId: string,
+    userId: string,
+    reason: string
+  ): Promise<IEstimate | null> {
+    try {
+      // Get current estimate
+      const currentEstimate = await this.getEstimate(projectId, estimateId);
+      if (!currentEstimate) {
+        throw new Error('Estimate not found');
+      }
+
+      // Check if estimate is in pending status
+      if (currentEstimate.status !== 'pending') {
+        throw new Error('Only pending estimates can be rejected');
+      }
+
+      // Update the estimate status
+      const result = await this.docClient.send(new UpdateCommand({
+        TableName: config.dynamodb.tables.estimates,
+        Key: {
+          PK: `PROJECT#${projectId}`,
+          SK: `ESTIMATE#${estimateId}`
+        },
+        UpdateExpression: 'set #status = :status, updated = :updated, updatedBy = :updatedBy',
+        ExpressionAttributeNames: {
+          '#status': 'status'
+        },
+        ExpressionAttributeValues: {
+          ':status': 'rejected',
+          ':updated': new Date().toISOString(),
+          ':updatedBy': userId
+        },
+        ReturnValues: 'ALL_NEW'
+      }));
+
+      const rejectedEstimate = result.Attributes as IEstimate;
+
+      // Send notification that estimate was rejected
+      await this.sendEstimateRejectedNotification(projectId, estimateId, rejectedEstimate, reason);
+
+      return rejectedEstimate;
+    } catch (error) {
+      this.logger.error('Error rejecting estimate', { error, projectId, estimateId });
+      throw error;
+    }
+  }
+
+  /**
+   * Create a materials takeoff from an estimate
+   * 
+   * @param projectId - Project ID
+   * @param estimateId - Estimate ID
+   * @param userId - User ID creating the takeoff
+   * @returns Created materials takeoff
+   */
+  async createMaterialsTakeoff(
+    projectId: string,
+    estimateId: string,
+    userId: string
+  ): Promise<IMaterialsTakeoff> {
+    try {
+      // Get estimate
+      const estimate = await this.getEstimate(projectId, estimateId);
+      if (!estimate) {
+        throw new Error('Estimate not found');
+      }
+
+      // Get latest takeoff version
+      const latestTakeoff = await this.getLatestMaterialsTakeoff(projectId, estimateId);
+      const newVersion = latestTakeoff ? latestTakeoff.version + 1 : 1;
+
+      // Process estimate to generate materials list
+      const materials = await this.processMaterialsFromEstimate(estimate);
+
+      const takeoffId = uuidv4();
+      const now = new Date().toISOString();
+
+      // Create takeoff record
+      const newTakeoff: IMaterialsTakeoff = {
+        takeoffId,
+        projectId,
+        estimateId,
+        status: 'draft',
+        version: newVersion,
+        items: materials,
+        created: now,
+        updated: now,
+        createdBy: userId,
+        updatedBy: userId
+      };
+
+      // Save to DynamoDB
+      await this.docClient.send(new PutCommand({
+        TableName: config.dynamodb.tables.materialsTakeoff,
+        Item: {
+          PK: `PROJECT#${projectId}`,
+          SK: `TAKEOFF#${takeoffId}`,
+          GSI1PK: `ESTIMATE#${estimateId}`,
+          GSI1SK: `TAKEOFF#${takeoffId}`,
+          ...newTakeoff
+        }
+      }));
+
+      return newTakeoff;
+    } catch (error) {
+      this.logger.error('Error creating materials takeoff', { error, projectId, estimateId });
+      throw error;
+    }
+  }
+
+  /**
+   * Get materials takeoff by ID
+   * 
+   * @param projectId - Project ID
+   * @param takeoffId - Takeoff ID
+   * @returns Materials takeoff
+   */
+  async getMaterialsTakeoff(projectId: string, takeoffId: string): Promise<IMaterialsTakeoff | null> {
+    try {
+      const result = await this.docClient.send(new GetCommand({
+        TableName: config.dynamodb.tables.materialsTakeoff,
+        Key: {
+          PK: `PROJECT#${projectId}`,
+          SK: `TAKEOFF#${takeoffId}`
+        }
+      }));
+
+      if (!result.Item) {
+        return null;
+      }
+
+      return result.Item as IMaterialsTakeoff;
+    } catch (error) {
+      this.logger.error('Error getting materials takeoff', { error, projectId, takeoffId });
+      throw error;
+    }
+  }
+
+  /**
+   * Get latest materials takeoff for an estimate
+   * 
+   * @param projectId - Project ID
+   * @param estimateId - Estimate ID
+   * @returns Latest materials takeoff
+   */
+  async getLatestMaterialsTakeoff(projectId: string, estimateId: string): Promise<IMaterialsTakeoff | null> {
+    try {
+      const result = await this.docClient.send(new QueryCommand({
+        TableName: config.dynamodb.tables.materialsTakeoff,
+        IndexName: 'GSI1',
+        KeyConditionExpression: 'GSI1PK = :pk',
+        ExpressionAttributeValues: {
+          ':pk': `ESTIMATE#${estimateId}`
+        },
+        ScanIndexForward: false, // Get newest first
+        Limit: 1
+      }));
+
+      if (!result.Items || result.Items.length === 0) {
+        return null;
+      }
+
+      return result.Items[0] as IMaterialsTakeoff;
+    } catch (error) {
+      this.logger.error('Error getting latest materials takeoff', { error, projectId, estimateId });
+      throw error;
+    }
+  }
