@@ -389,244 +389,327 @@ export class EstimationService {
   }
 
   /**
-   * Approve an estimate
+   * Process materials from estimate
    * 
-   * @param projectId - Project ID
-   * @param estimateId - Estimate ID
-   * @param userId - User ID approving the estimate
-   * @returns Approved estimate
+   * @param estimate - Estimate data
+   * @returns List of material takeoff items
    */
-  async approveEstimate(
-    projectId: string,
-    estimateId: string,
-    userId: string
-  ): Promise<IEstimate | null> {
+  private async processMaterialsFromEstimate(estimate: IEstimate): Promise<IMaterialTakeoffItem[]> {
     try {
-      // Get current estimate
-      const currentEstimate = await this.getEstimate(projectId, estimateId);
-      if (!currentEstimate) {
-        throw new Error('Estimate not found');
-      }
-
-      // Check if estimate is in pending status
-      if (currentEstimate.status !== 'pending') {
-        throw new Error('Only pending estimates can be approved');
-      }
-
-      const now = new Date().toISOString();
-
-      // Update the estimate status
-      const result = await this.docClient.send(new UpdateCommand({
-        TableName: config.dynamodb.tables.estimates,
-        Key: {
-          PK: `PROJECT#${projectId}`,
-          SK: `ESTIMATE#${estimateId}`
-        },
-        UpdateExpression: 'set #status = :status, approvedDate = :approvedDate, approvedBy = :approvedBy, updated = :updated, updatedBy = :updatedBy',
-        ExpressionAttributeNames: {
-          '#status': 'status'
-        },
-        ExpressionAttributeValues: {
-          ':status': 'approved',
-          ':approvedDate': now,
-          ':approvedBy': userId,
-          ':updated': now,
-          ':updatedBy': userId
-        },
-        ReturnValues: 'ALL_NEW'
-      }));
-
-      const approvedEstimate = result.Attributes as IEstimate;
-
-      // Generate materials takeoff for the approved estimate
-      await this.createMaterialsTakeoff(projectId, estimateId, userId);
-
-      // Send notification that estimate was approved
-      await this.sendEstimateApprovedNotification(projectId, estimateId, approvedEstimate);
-
-      return approvedEstimate;
-    } catch (error) {
-      this.logger.error('Error approving estimate', { error, projectId, estimateId });
-      throw error;
-    }
-  }
-
-  /**
-   * Reject an estimate
-   * 
-   * @param projectId - Project ID
-   * @param estimateId - Estimate ID
-   * @param userId - User ID rejecting the estimate
-   * @param reason - Reason for rejection
-   * @returns Rejected estimate
-   */
-  async rejectEstimate(
-    projectId: string,
-    estimateId: string,
-    userId: string,
-    reason: string
-  ): Promise<IEstimate | null> {
-    try {
-      // Get current estimate
-      const currentEstimate = await this.getEstimate(projectId, estimateId);
-      if (!currentEstimate) {
-        throw new Error('Estimate not found');
-      }
-
-      // Check if estimate is in pending status
-      if (currentEstimate.status !== 'pending') {
-        throw new Error('Only pending estimates can be rejected');
-      }
-
-      // Update the estimate status
-      const result = await this.docClient.send(new UpdateCommand({
-        TableName: config.dynamodb.tables.estimates,
-        Key: {
-          PK: `PROJECT#${projectId}`,
-          SK: `ESTIMATE#${estimateId}`
-        },
-        UpdateExpression: 'set #status = :status, updated = :updated, updatedBy = :updatedBy',
-        ExpressionAttributeNames: {
-          '#status': 'status'
-        },
-        ExpressionAttributeValues: {
-          ':status': 'rejected',
-          ':updated': new Date().toISOString(),
-          ':updatedBy': userId
-        },
-        ReturnValues: 'ALL_NEW'
-      }));
-
-      const rejectedEstimate = result.Attributes as IEstimate;
-
-      // Send notification that estimate was rejected
-      await this.sendEstimateRejectedNotification(projectId, estimateId, rejectedEstimate, reason);
-
-      return rejectedEstimate;
-    } catch (error) {
-      this.logger.error('Error rejecting estimate', { error, projectId, estimateId });
-      throw error;
-    }
-  }
-
-  /**
-   * Create a materials takeoff from an estimate
-   * 
-   * @param projectId - Project ID
-   * @param estimateId - Estimate ID
-   * @param userId - User ID creating the takeoff
-   * @returns Created materials takeoff
-   */
-  async createMaterialsTakeoff(
-    projectId: string,
-    estimateId: string,
-    userId: string
-  ): Promise<IMaterialsTakeoff> {
-    try {
-      // Get estimate
-      const estimate = await this.getEstimate(projectId, estimateId);
-      if (!estimate) {
-        throw new Error('Estimate not found');
-      }
-
-      // Get latest takeoff version
-      const latestTakeoff = await this.getLatestMaterialsTakeoff(projectId, estimateId);
-      const newVersion = latestTakeoff ? latestTakeoff.version + 1 : 1;
-
-      // Process estimate to generate materials list
-      const materials = await this.processMaterialsFromEstimate(estimate);
-
-      const takeoffId = uuidv4();
-      const now = new Date().toISOString();
-
-      // Create takeoff record
-      const newTakeoff: IMaterialsTakeoff = {
-        takeoffId,
-        projectId,
-        estimateId,
-        status: 'draft',
-        version: newVersion,
-        items: materials,
-        created: now,
-        updated: now,
-        createdBy: userId,
-        updatedBy: userId
-      };
-
-      // Save to DynamoDB
-      await this.docClient.send(new PutCommand({
-        TableName: config.dynamodb.tables.materialsTakeoff,
-        Item: {
-          PK: `PROJECT#${projectId}`,
-          SK: `TAKEOFF#${takeoffId}`,
-          GSI1PK: `ESTIMATE#${estimateId}`,
-          GSI1SK: `TAKEOFF#${takeoffId}`,
-          ...newTakeoff
+      // Initialize material map for aggregation
+      const materialMap = new Map<string, IMaterialTakeoffItem>();
+      
+      // Ensure MongoDB connection
+      await this.initMongo();
+      
+      // Process each room and item in the estimate
+      for (const room of estimate.rooms) {
+        for (const item of room.items) {
+          // Get assembly details from MongoDB
+          const assembly = await this.assemblyCollection.findOne({ _id: item.assemblyId });
+          
+          if (assembly && assembly.materials) {
+            // Process each material in the assembly
+            for (const assemblyMaterial of assembly.materials) {
+              // Get material details from MongoDB
+              const material = await this.materialCollection.findOne({ _id: assemblyMaterial.materialId });
+              
+              if (material) {
+                // Calculate quantities
+                const quantity = item.quantity * assemblyMaterial.quantity;
+                
+                // Determine waste factor (use material default if not specified in assembly)
+                const wasteFactor = assemblyMaterial.wasteFactor || material.wasteFactor || 1.1; // 10% default waste
+                
+                // Calculate adjusted quantity with waste factor
+                const adjustedQuantity = Math.ceil(quantity * wasteFactor);
+                
+                // Use current cost from material
+                const unitCost = material.currentCost || 0;
+                
+                // Calculate total cost
+                const totalCost = adjustedQuantity * unitCost;
+                
+                // Check if material is already in the map
+                if (materialMap.has(material._id)) {
+                  // Update existing material
+                  const existingMaterial = materialMap.get(material._id)!;
+                  existingMaterial.quantity += quantity;
+                  existingMaterial.adjustedQuantity += adjustedQuantity;
+                  existingMaterial.totalCost += totalCost;
+                } else {
+                  // Add new material
+                  materialMap.set(material._id, {
+                    materialId: material._id,
+                    name: material.name,
+                    quantity,
+                    wasteFactor,
+                    adjustedQuantity,
+                    unitCost,
+                    totalCost,
+                    inventoryAllocated: 0, // Will be determined later
+                    purchaseNeeded: adjustedQuantity // Initially assume all need to be purchased
+                  });
+                }
+              }
+            }
+          }
         }
-      }));
-
-      return newTakeoff;
+      }
+      
+      // Convert map to array
+      return Array.from(materialMap.values());
     } catch (error) {
-      this.logger.error('Error creating materials takeoff', { error, projectId, estimateId });
-      throw error;
+      this.logger.error('Error processing materials from estimate', { error, estimateId: estimate.estimateId });
+      return [];
     }
   }
 
   /**
-   * Get materials takeoff by ID
+   * Convert blueprint rooms to estimate rooms
+   * 
+   * @param blueprintRooms - Blueprint room data
+   * @returns Estimate rooms
+   */
+  private async convertBlueprintRoomsToEstimateRooms(blueprintRooms: IRoomDevice[]): Promise<IEstimateRoom[]> {
+    try {
+      const estimateRooms: IEstimateRoom[] = [];
+      
+      // Ensure MongoDB connection
+      await this.initMongo();
+      
+      // Process each room from the blueprint
+      for (const blueprintRoom of blueprintRooms) {
+        const estimateRoom: IEstimateRoom = {
+          name: blueprintRoom.name,
+          items: []
+        };
+        
+        // Process each device in the room
+        for (const device of blueprintRoom.devices) {
+          // Find assembly by code
+          const assembly = await this.assemblyCollection.findOne({ code: device.assembly });
+          
+          if (assembly) {
+            // Calculate costs
+            const laborHours = (assembly.laborMinutes / 60) * device.count;
+            let materialCost = 0;
+            
+            // Calculate material cost
+            if (assembly.materials) {
+              for (const material of assembly.materials) {
+                // Get material details
+                const materialDoc = await this.materialCollection.findOne({ _id: material.materialId });
+                if (materialDoc) {
+                  materialCost += (materialDoc.currentCost || 0) * material.quantity;
+                }
+              }
+            }
+            
+            // Multiply by count
+            materialCost *= device.count;
+            
+            // Calculate total cost (assuming $75/hour labor rate)
+            const totalCost = materialCost + (laborHours * 75);
+            
+            // Create estimate item
+            const estimateItem: IEstimateItem = {
+              id: uuidv4(),
+              assemblyId: assembly._id,
+              assemblyName: assembly.name,
+              quantity: device.count,
+              laborHours,
+              materialCost,
+              totalCost
+            };
+            
+            // Add to room items
+            estimateRoom.items.push(estimateItem);
+          }
+        }
+        
+        // Add room to estimate
+        estimateRooms.push(estimateRoom);
+      }
+      
+      return estimateRooms;
+    } catch (error) {
+      this.logger.error('Error converting blueprint rooms to estimate rooms', { error });
+      return [];
+    }
+  }
+
+  /**
+   * Get project details from DynamoDB
    * 
    * @param projectId - Project ID
-   * @param takeoffId - Takeoff ID
-   * @returns Materials takeoff
+   * @returns Project details or null if not found
    */
-  async getMaterialsTakeoff(projectId: string, takeoffId: string): Promise<IMaterialsTakeoff | null> {
+  private async getProject(projectId: string): Promise<any | null> {
     try {
       const result = await this.docClient.send(new GetCommand({
-        TableName: config.dynamodb.tables.materialsTakeoff,
+        TableName: config.dynamodb.tables.projects,
         Key: {
           PK: `PROJECT#${projectId}`,
-          SK: `TAKEOFF#${takeoffId}`
+          SK: 'METADATA'
         }
       }));
 
-      if (!result.Item) {
-        return null;
-      }
-
-      return result.Item as IMaterialsTakeoff;
+      return result.Item;
     } catch (error) {
-      this.logger.error('Error getting materials takeoff', { error, projectId, takeoffId });
-      throw error;
+      this.logger.error('Error getting project', { error, projectId });
+      return null;
     }
   }
 
   /**
-   * Get latest materials takeoff for an estimate
+   * Send estimate approval request email
    * 
    * @param projectId - Project ID
    * @param estimateId - Estimate ID
-   * @returns Latest materials takeoff
+   * @param estimate - Estimate data
    */
-  async getLatestMaterialsTakeoff(projectId: string, estimateId: string): Promise<IMaterialsTakeoff | null> {
+  private async sendEstimateApprovalRequest(
+    projectId: string,
+    estimateId: string,
+    estimate: IEstimate
+  ): Promise<void> {
     try {
-      const result = await this.docClient.send(new QueryCommand({
-        TableName: config.dynamodb.tables.materialsTakeoff,
-        IndexName: 'GSI1',
-        KeyConditionExpression: 'GSI1PK = :pk',
-        ExpressionAttributeValues: {
-          ':pk': `ESTIMATE#${estimateId}`
-        },
-        ScanIndexForward: false, // Get newest first
-        Limit: 1
-      }));
-
-      if (!result.Items || result.Items.length === 0) {
-        return null;
+      // Get project details
+      const project = await this.getProject(projectId);
+      if (!project) {
+        this.logger.warn('Cannot send approval request - project not found', { projectId });
+        return;
       }
 
-      return result.Items[0] as IMaterialsTakeoff;
+      // Get customer contact
+      if (project.customer && project.customer.email) {
+        // Use SendGrid service to send approval request
+        await this.sendGridService.sendEstimateApprovalRequest(
+          estimateId,
+          projectId,
+          project.name,
+          project.customer.email,
+          project.customer.contactName || 'Valued Customer',
+          estimate.totalCost
+        );
+      } else {
+        this.logger.warn('Cannot send approval request - customer email not found', { projectId });
+      }
     } catch (error) {
-      this.logger.error('Error getting latest materials takeoff', { error, projectId, estimateId });
-      throw error;
+      this.logger.error('Error sending estimate approval request', { error, projectId, estimateId });
+      // Continue even if email fails
     }
   }
+
+  /**
+   * Send estimate approved notification
+   * 
+   * @param projectId - Project ID
+   * @param estimateId - Estimate ID
+   * @param estimate - Estimate data
+   */
+  private async sendEstimateApprovedNotification(
+    projectId: string,
+    estimateId: string,
+    estimate: IEstimate
+  ): Promise<void> {
+    try {
+      // Get project details
+      const project = await this.getProject(projectId);
+      if (!project) {
+        this.logger.warn('Cannot send approval notification - project not found', { projectId });
+        return;
+      }
+
+      // Get estimate creator
+      const creator = await this.getUser(estimate.createdBy);
+      if (creator && creator.email) {
+        // Send notification to creator
+        await this.sendGridService.sendEmail(
+          creator.email,
+          `Estimate Approved - ${project.name}`,
+          `The estimate for project ${project.name} has been approved.
+
+Estimate Total: $${estimate.totalCost.toFixed(2)}
+Approved By: ${estimate.approvedBy || 'Unknown'}
+Approved Date: ${estimate.approvedDate || new Date().toISOString()}
+
+You can view the estimate and generate materials takeoff at ${config.frontend.url}/projects/${projectId}/estimates/${estimateId}
+          `
+        );
+      }
+    } catch (error) {
+      this.logger.error('Error sending estimate approved notification', { error, projectId, estimateId });
+      // Continue even if email fails
+    }
+  }
+
+  /**
+   * Send estimate rejected notification
+   * 
+   * @param projectId - Project ID
+   * @param estimateId - Estimate ID
+   * @param estimate - Estimate data
+   * @param reason - Rejection reason
+   */
+  private async sendEstimateRejectedNotification(
+    projectId: string,
+    estimateId: string,
+    estimate: IEstimate,
+    reason: string
+  ): Promise<void> {
+    try {
+      // Get project details
+      const project = await this.getProject(projectId);
+      if (!project) {
+        this.logger.warn('Cannot send rejection notification - project not found', { projectId });
+        return;
+      }
+
+      // Get estimate creator
+      const creator = await this.getUser(estimate.createdBy);
+      if (creator && creator.email) {
+        // Send notification to creator
+        await this.sendGridService.sendEmail(
+          creator.email,
+          `Estimate Rejected - ${project.name}`,
+          `The estimate for project ${project.name} has been rejected.
+
+Estimate Total: $${estimate.totalCost.toFixed(2)}
+Rejected By: ${estimate.updatedBy || 'Unknown'}
+Rejection Reason: ${reason || 'No reason provided'}
+
+You can view and revise the estimate at ${config.frontend.url}/projects/${projectId}/estimates/${estimateId}
+          `
+        );
+      }
+    } catch (error) {
+      this.logger.error('Error sending estimate rejected notification', { error, projectId, estimateId });
+      // Continue even if email fails
+    }
+  }
+
+  /**
+   * Get user details from DynamoDB
+   * 
+   * @param userId - User ID
+   * @returns User details or null if not found
+   */
+  private async getUser(userId: string): Promise<any | null> {
+    try {
+      const result = await this.docClient.send(new GetCommand({
+        TableName: config.dynamodb.tables.users,
+        Key: {
+          PK: `USER#${userId}`,
+          SK: 'METADATA'
+        }
+      }));
+
+      return result.Item;
+    } catch (error) {
+      this.logger.error('Error getting user', { error, userId });
+      return null;
+    }
+  }
+}
