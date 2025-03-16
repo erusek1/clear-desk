@@ -364,4 +364,86 @@ export class VehicleInventoryService {
       this.logger.error('Error updating vehicle inventory level', { error, vehicleId, materialId });
       throw error;
     }
-  }}
+  }
+
+  /**
+   * Record a vehicle inventory transaction
+   * 
+   * @param transaction - Transaction data without ID
+   * @returns Created transaction
+   */
+  async recordVehicleTransaction(
+    transaction: Omit<IVehicleInventoryTransaction, 'transactionId' | 'created'>
+  ): Promise<IVehicleInventoryTransaction> {
+    try {
+      const transactionId = uuidv4();
+      const now = new Date().toISOString();
+      
+      // Create transaction record
+      const newTransaction: IVehicleInventoryTransaction = {
+        transactionId,
+        ...transaction,
+        created: now
+      };
+
+      // Save transaction to DynamoDB
+      await this.docClient.send(new PutCommand({
+        TableName: config.dynamodb.tables.vehicleInventoryTransactions,
+        Item: {
+          PK: `VEHICLE#${transaction.vehicleId}`,
+          SK: `TRANSACTION#${now}`,
+          GSI1PK: `MATERIAL#${transaction.materialId}`,
+          GSI1SK: `TRANSACTION#${now}`,
+          ...newTransaction
+        }
+      }));
+
+      // Update inventory level based on transaction type
+      let quantityChange = 0;
+      switch (transaction.type) {
+        case TransactionType.PURCHASE:
+        case TransactionType.RETURN:
+          quantityChange = transaction.quantity;
+          break;
+        case TransactionType.ALLOCATION:
+          quantityChange = -transaction.quantity;
+          break;
+        case TransactionType.ADJUSTMENT:
+          quantityChange = transaction.quantity; // Quantity is the adjustment amount (positive or negative)
+          break;
+        case TransactionType.TRANSFER:
+          if (transaction.sourceId) {
+            // This is a transfer from warehouse/other vehicle to this vehicle
+            quantityChange = transaction.quantity;
+          } else {
+            // This is a transfer from this vehicle to warehouse/other vehicle
+            quantityChange = -transaction.quantity;
+          }
+          break;
+        default:
+          break;
+      }
+
+      if (quantityChange !== 0) {
+        // Get current inventory level
+        const currentLevel = await this.getVehicleInventoryLevel(transaction.vehicleId, transaction.materialId);
+        const currentQuantity = currentLevel?.currentQuantity || 0;
+        
+        // Update inventory level
+        await this.updateVehicleInventoryLevel(
+          transaction.vehicleId,
+          transaction.materialId,
+          currentQuantity + quantityChange,
+          transaction.createdBy,
+          currentLevel?.minQuantity,
+          currentLevel?.standardQuantity,
+          currentLevel?.location
+        );
+      }
+
+      return newTransaction;
+    } catch (error) {
+      this.logger.error('Error recording vehicle transaction', { error, transaction });
+      throw error;
+    }
+  }
