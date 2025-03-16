@@ -169,3 +169,162 @@ export class EstimationService {
       throw error;
     }
   }
+
+  /**
+   * Get latest estimate for a project
+   * 
+   * @param projectId - Project ID
+   * @returns Latest estimate
+   */
+  async getLatestEstimate(projectId: string): Promise<IEstimate | null> {
+    try {
+      const result = await this.docClient.send(new QueryCommand({
+        TableName: config.dynamodb.tables.estimates,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+        ExpressionAttributeValues: {
+          ':pk': `PROJECT#${projectId}`,
+          ':sk': 'ESTIMATE#'
+        },
+        ScanIndexForward: false, // Get newest first
+        Limit: 1
+      }));
+
+      if (!result.Items || result.Items.length === 0) {
+        return null;
+      }
+
+      return result.Items[0] as IEstimate;
+    } catch (error) {
+      this.logger.error('Error getting latest estimate', { error, projectId });
+      throw error;
+    }
+  }
+
+  /**
+   * Get latest estimate version number
+   * 
+   * @param projectId - Project ID
+   * @returns Latest version number
+   */
+  private async getLatestEstimateVersion(projectId: string): Promise<number> {
+    try {
+      const latestEstimate = await this.getLatestEstimate(projectId);
+      return latestEstimate ? latestEstimate.version : 0;
+    } catch (error) {
+      this.logger.error('Error getting latest estimate version', { error, projectId });
+      return 0;
+    }
+  }
+
+  /**
+   * List all estimates for a project
+   * 
+   * @param projectId - Project ID
+   * @returns List of estimates
+   */
+  async listProjectEstimates(projectId: string): Promise<IEstimate[]> {
+    try {
+      const result = await this.docClient.send(new QueryCommand({
+        TableName: config.dynamodb.tables.estimates,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+        ExpressionAttributeValues: {
+          ':pk': `PROJECT#${projectId}`,
+          ':sk': 'ESTIMATE#'
+        },
+        ScanIndexForward: false // Most recent first
+      }));
+
+      return (result.Items || []) as IEstimate[];
+    } catch (error) {
+      this.logger.error('Error listing project estimates', { error, projectId });
+      throw error;
+    }
+  }
+
+  /**
+   * Update an estimate
+   * 
+   * @param projectId - Project ID
+   * @param estimateId - Estimate ID
+   * @param updateData - Data to update
+   * @param userId - User ID performing the update
+   * @returns Updated estimate
+   */
+  async updateEstimate(
+    projectId: string,
+    estimateId: string,
+    updateData: Partial<IEstimate>,
+    userId: string
+  ): Promise<IEstimate | null> {
+    try {
+      // Get current estimate
+      const currentEstimate = await this.getEstimate(projectId, estimateId);
+      if (!currentEstimate) {
+        throw new Error('Estimate not found');
+      }
+
+      // Check if estimate is in draft status
+      if (currentEstimate.status !== 'draft') {
+        throw new Error('Only draft estimates can be updated');
+      }
+
+      // Prepare update expressions
+      let updateExpression = 'set updated = :updated, updatedBy = :updatedBy';
+      const expressionAttributeValues: Record<string, any> = {
+        ':updated': new Date().toISOString(),
+        ':updatedBy': userId
+      };
+      const expressionAttributeNames: Record<string, string> = {};
+
+      // Add updateable fields to the expression
+      if (updateData.rooms) {
+        updateExpression += ', #rooms = :rooms';
+        expressionAttributeValues[':rooms'] = updateData.rooms;
+        expressionAttributeNames['#rooms'] = 'rooms';
+      }
+
+      if (updateData.phases) {
+        updateExpression += ', phases = :phases';
+        expressionAttributeValues[':phases'] = updateData.phases;
+      }
+
+      if (updateData.totalLaborHours !== undefined) {
+        updateExpression += ', totalLaborHours = :totalLaborHours';
+        expressionAttributeValues[':totalLaborHours'] = updateData.totalLaborHours;
+      }
+
+      if (updateData.totalMaterialCost !== undefined) {
+        updateExpression += ', totalMaterialCost = :totalMaterialCost';
+        expressionAttributeValues[':totalMaterialCost'] = updateData.totalMaterialCost;
+      }
+
+      if (updateData.totalCost !== undefined) {
+        updateExpression += ', totalCost = :totalCost';
+        expressionAttributeValues[':totalCost'] = updateData.totalCost;
+      }
+
+      if (updateData.status) {
+        updateExpression += ', #status = :status';
+        expressionAttributeValues[':status'] = updateData.status;
+        expressionAttributeNames['#status'] = 'status';
+      }
+
+      // Update the estimate
+      const result = await this.docClient.send(new UpdateCommand({
+        TableName: config.dynamodb.tables.estimates,
+        Key: {
+          PK: `PROJECT#${projectId}`,
+          SK: `ESTIMATE#${estimateId}`
+        },
+        UpdateExpression: updateExpression,
+        ExpressionAttributeValues: expressionAttributeValues,
+        ExpressionAttributeNames: Object.keys(expressionAttributeNames).length > 0 ? expressionAttributeNames : undefined,
+        ReturnValues: 'ALL_NEW'
+      }));
+
+      return result.Attributes as IEstimate;
+    } catch (error) {
+      this.logger.error('Error updating estimate', { error, projectId, estimateId });
+      throw error;
+    }
+  }
