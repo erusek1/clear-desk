@@ -1,4 +1,4 @@
-// backend/src/functions/blueprints/process-blueprint.lambda.ts
+// backend/src/functions/chatbot/index-project-documents.lambda.ts
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { z } from 'zod';
@@ -8,26 +8,33 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { Logger } from '../../utils/logger';
 import { errorResponse, successResponse } from '../../utils/response';
 import { validateAuth } from '../../utils/auth';
-import { BlueprintService } from '../../services/blueprint.service';
+import { ChatbotService } from '../../services/chatbot.service';
 
 // Initialize clients
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const s3Client = new S3Client({});
-const logger = new Logger('process-blueprint');
-const blueprintService = new BlueprintService(docClient, s3Client);
+const logger = new Logger('index-project-documents');
+const chatbotService = new ChatbotService(docClient, s3Client);
 
 // Input validation schema
 const RequestSchema = z.object({
   projectId: z.string().uuid(),
-  blueprintS3Key: z.string(),
-  templateId: z.string().optional(),
+  documentTypes: z.array(z.enum([
+    'all',
+    'blueprint',
+    'estimate',
+    'inspection',
+    'daily-report',
+    'communication',
+    'notes'
+  ])).default(['all'])
 });
 
 type RequestType = z.infer<typeof RequestSchema>;
 
 /**
- * Lambda function to process a blueprint PDF
+ * Lambda function to index project documents for the chatbot knowledge base
  * 
  * @param event - API Gateway event
  * @returns API Gateway response
@@ -53,38 +60,60 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return errorResponse(400, { message: 'Invalid request format', details: error });
     }
 
-    // 3. Log operation start
-    logger.info('Processing blueprint', { 
+    // 3. Check if user is admin or manager
+    if (user.role !== 'admin' && user.role !== 'manager') {
+      return errorResponse(403, { message: 'Insufficient permissions to index project documents' });
+    }
+
+    // 4. Log operation start
+    logger.info('Indexing project documents', { 
       projectId: requestData.projectId,
-      blueprintS3Key: requestData.blueprintS3Key,
-      userId: user.id,
+      documentTypes: requestData.documentTypes,
+      userId: user.id
     });
 
-    // 4. Process blueprint
-    const result = await blueprintService.processBlueprint(
+    // 5. Verify user's access to project
+    const hasAccess = await chatbotService.verifyProjectAccess(
       requestData.projectId,
-      requestData.blueprintS3Key,
-      user.companyId,
-      requestData.templateId
+      user.id,
+      user.role
     );
 
-    // 5. Return successful response
+    if (!hasAccess) {
+      return errorResponse(403, { message: 'Access denied to this project' });
+    }
+
+    // 6. Index the project documents
+    const indexingResult = await chatbotService.indexProjectDocuments(
+      requestData.projectId,
+      requestData.documentTypes,
+      user.id
+    );
+
+    // 7. Return successful response
     return successResponse(200, { 
-      message: 'Blueprint processed successfully',
-      data: result
+      message: 'Project documents indexed successfully',
+      data: {
+        projectId: requestData.projectId,
+        documentsIndexed: indexingResult.documentsIndexed,
+        documentTypes: indexingResult.documentTypes,
+        totalDocuments: indexingResult.totalDocuments
+      }
     });
   } catch (error) {
-    // 6. Handle and log errors
-    logger.error('Error processing blueprint', { error });
+    // 8. Handle and log errors
+    logger.error('Error indexing project documents', { error });
     
     if (error instanceof Error) {
       // Return appropriate error response based on error type
       if (error.name === 'ResourceNotFoundException') {
-        return errorResponse(404, { message: 'Project or blueprint not found' });
+        return errorResponse(404, { message: 'Project not found' });
       } else if (error.name === 'ValidationError') {
         return errorResponse(400, { message: error.message });
       } else if (error.name === 'AccessDeniedException') {
         return errorResponse(403, { message: 'Access denied' });
+      } else if (error.name === 'ServiceUnavailableError') {
+        return errorResponse(503, { message: 'Indexing service temporarily unavailable' });
       }
     }
     

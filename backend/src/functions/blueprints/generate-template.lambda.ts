@@ -1,4 +1,4 @@
-// backend/src/functions/blueprints/process-blueprint.lambda.ts
+// backend/src/functions/blueprints/generate-template.lambda.ts
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { z } from 'zod';
@@ -14,20 +14,28 @@ import { BlueprintService } from '../../services/blueprint.service';
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const s3Client = new S3Client({});
-const logger = new Logger('process-blueprint');
+const logger = new Logger('generate-template');
 const blueprintService = new BlueprintService(docClient, s3Client);
 
 // Input validation schema
 const RequestSchema = z.object({
-  projectId: z.string().uuid(),
-  blueprintS3Key: z.string(),
-  templateId: z.string().optional(),
+  name: z.string(),
+  description: z.string().optional(),
+  sampleFileKeys: z.array(z.string()).optional(),
+  patterns: z.array(
+    z.object({
+      dataType: z.string(),
+      patternType: z.string(),
+      pattern: z.string(),
+      examples: z.array(z.string()).optional()
+    })
+  ).optional()
 });
 
 type RequestType = z.infer<typeof RequestSchema>;
 
 /**
- * Lambda function to process a blueprint PDF
+ * Lambda function to create a blueprint template
  * 
  * @param event - API Gateway event
  * @returns API Gateway response
@@ -54,34 +62,34 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // 3. Log operation start
-    logger.info('Processing blueprint', { 
-      projectId: requestData.projectId,
-      blueprintS3Key: requestData.blueprintS3Key,
+    logger.info('Creating blueprint template', { 
+      templateName: requestData.name,
       userId: user.id,
     });
 
-    // 4. Process blueprint
-    const result = await blueprintService.processBlueprint(
-      requestData.projectId,
-      requestData.blueprintS3Key,
-      user.companyId,
-      requestData.templateId
-    );
+    // 4. Create template
+    const template = await blueprintService.createTemplate({
+      name: requestData.name,
+      description: requestData.description || '',
+      patterns: requestData.patterns || [],
+      sampleFiles: requestData.sampleFileKeys || [],
+      createdBy: user.id,
+      updatedBy: user.id
+    });
 
     // 5. Return successful response
-    return successResponse(200, { 
-      message: 'Blueprint processed successfully',
-      data: result
+    return successResponse(201, { 
+      message: 'Blueprint template created successfully',
+      templateId: template.templateId,
+      name: template.name
     });
   } catch (error) {
     // 6. Handle and log errors
-    logger.error('Error processing blueprint', { error });
+    logger.error('Error creating blueprint template', { error });
     
     if (error instanceof Error) {
       // Return appropriate error response based on error type
-      if (error.name === 'ResourceNotFoundException') {
-        return errorResponse(404, { message: 'Project or blueprint not found' });
-      } else if (error.name === 'ValidationError') {
+      if (error.name === 'ValidationError') {
         return errorResponse(400, { message: error.message });
       } else if (error.name === 'AccessDeniedException') {
         return errorResponse(403, { message: 'Access denied' });

@@ -1,20 +1,97 @@
 // backend/src/services/chatbot.service.ts
 
 import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { v4 as uuidv4 } from 'uuid';
 import { Logger } from '../utils/logger';
 import config from '../config';
 import { MongoClient } from 'mongodb';
 import { SendGridService } from './sendgrid.service';
-import { 
-  IKnowledgeDocument, 
-  IPrivateNote, 
-  IChatMessage,
-  IChatThread,
-  IChatbotQueryResult,
-  ContentVisibility,
-  IKnowledgeSearchResult
-} from '../types/chatbot.types';
+
+/**
+ * Visibility level for knowledge base content
+ */
+export enum ContentVisibility {
+  PUBLIC = 'public',    // Visible to all
+  PRIVATE = 'private',  // Visible only to company users
+  INTERNAL = 'internal' // Visible only to specific roles
+}
+
+/**
+ * Knowledge base document interface
+ */
+export interface IKnowledgeDocument {
+  documentId: string;
+  projectId: string;
+  title: string;
+  content: string;
+  contentType: 'estimate' | 'blueprint' | 'note' | 'communication' | 'instruction';
+  visibility: ContentVisibility;
+  metadata?: Record<string, any>;
+  vectorEmbedding?: number[];
+  created: string;
+  updated: string;
+  createdBy: string;
+  updatedBy: string;
+}
+
+/**
+ * Private note interface
+ */
+export interface IPrivateNote {
+  noteId: string;
+  projectId: string;
+  itemId?: string;
+  content: string;
+  context?: string;
+  created: string;
+  updated: string;
+  createdBy: string;
+  updatedBy: string;
+}
+
+/**
+ * Chat message interface
+ */
+export interface IChatMessage {
+  messageId: string;
+  projectId: string;
+  threadId: string;
+  sender: string;
+  senderType: 'user' | 'system' | 'bot';
+  content: string;
+  timestamp: string;
+  metadata?: Record<string, any>;
+}
+
+/**
+ * Chat thread interface
+ */
+export interface IChatThread {
+  threadId: string;
+  projectId: string;
+  title: string;
+  created: string;
+  updated: string;
+  participants: string[];
+  status: 'active' | 'archived';
+}
+
+/**
+ * Chatbot query result interface
+ */
+export interface IChatbotQueryResult {
+  query: string;
+  response: string;
+  sources: {
+    documentId: string;
+    title: string;
+    content: string;
+    relevanceScore: number;
+  }[];
+  confidence: number;
+  needsHumanReview: boolean;
+}
 
 /**
  * Chatbot service for project knowledge base and customer chat
@@ -25,30 +102,11 @@ export class ChatbotService {
   private sendGridService: SendGridService;
 
   constructor(
-    private docClient: DynamoDBDocumentClient
+    private docClient: DynamoDBDocumentClient,
+    private s3Client: S3Client
   ) {
     this.logger = new Logger('ChatbotService');
     this.sendGridService = new SendGridService();
-    this.initMongo();
-  }
-
-  /**
-   * Initialize MongoDB connection
-   */
-  private async initMongo(): Promise<void> {
-    try {
-      if (!this.mongoClient) {
-        this.mongoClient = new MongoClient(config.mongodb.uri);
-        await this.mongoClient.connect();
-        
-        const db = this.mongoClient.db(config.mongodb.dbName);
-        
-        this.logger.info('MongoDB connection established');
-      }
-    } catch (error) {
-      this.logger.error('Error connecting to MongoDB', { error });
-      throw error;
-    }
   }
 
   /**
@@ -853,3 +911,203 @@ This question has been automatically flagged because our system doesn't have eno
       }
       embedding.push(value);
     }
+    
+    // Normalize the embedding vector
+    const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
+    return embedding.map(val => val / magnitude);
+  }
+
+  /**
+   * Calculate similarity between two embedding vectors (cosine similarity)
+   * 
+   * @param embedding1 - First embedding vector
+   * @param embedding2 - Second embedding vector
+   * @returns Similarity score (0-1)
+   */
+  private calculateSimilarity(embedding1: number[], embedding2: number[]): number {
+    // If either embedding is empty, return 0
+    if (embedding1.length === 0 || embedding2.length === 0) {
+      return 0;
+    }
+    
+    // If embedding lengths don't match, return 0
+    if (embedding1.length !== embedding2.length) {
+      return 0;
+    }
+    
+    // Calculate dot product
+    let dotProduct = 0;
+    for (let i = 0; i < embedding1.length
+        // If embedding lengths don't match, return 0
+    if (embedding1.length !== embedding2.length) {
+        return 0;
+      }
+      
+      // Calculate dot product
+      let dotProduct = 0;
+      for (let i = 0; i < embedding1.length; i++) {
+        dotProduct += embedding1[i] * embedding2[i];
+      }
+      
+      // Cosine similarity is the dot product of the normalized vectors
+      // Since we've already normalized the vectors, the dot product is the cosine similarity
+      return Math.max(0, Math.min(1, dotProduct));
+    }
+  
+    /**
+     * Simple hash function for strings
+     * 
+     * @param str - String to hash
+     * @returns Hash value
+     */
+    private simpleHash(str: string): number {
+      let hash = 0;
+      for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) - hash) + str.charCodeAt(i);
+        hash |= 0;  // Convert to 32-bit integer
+      }
+      return hash;
+    }
+  
+    /**
+     * Flatten a nested object into a string representation
+     * 
+     * @param obj - Object to flatten
+     * @param prefix - Prefix for nested keys
+     * @returns Flattened string
+     */
+    private flattenObject(obj: any, prefix = ''): string {
+      let result = '';
+      
+      for (const key in obj) {
+        if (Object.prototype.hasOwnProperty.call(obj, key)) {
+          const value = obj[key];
+          const newKey = prefix ? `${prefix}.${key}` : key;
+          
+          if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+            // Recursively flatten nested objects
+            result += this.flattenObject(value, newKey);
+          } else if (Array.isArray(value)) {
+            // Handle arrays by joining their values
+            if (value.length > 0 && typeof value[0] === 'object') {
+              // If array contains objects, recursively flatten each object
+              value.forEach((item, index) => {
+                if (typeof item === 'object' && item !== null) {
+                  result += this.flattenObject(item, `${newKey}[${index}]`);
+                } else {
+                  result += `${newKey}[${index}]: ${item}. `;
+                }
+              });
+            } else {
+              result += `${newKey}: ${value.join(', ')}. `;
+            }
+          } else {
+            // Add simple key-value pair
+            result += `${newKey}: ${value}. `;
+          }
+        }
+      }
+      
+      return result;
+    }
+  
+    /**
+     * Get project communications
+     * 
+     * @param projectId - Project ID
+     * @returns List of communications
+     */
+    private async getProjectCommunications(projectId: string): Promise<any[]> {
+      try {
+        const result = await this.docClient.send(new QueryCommand({
+          TableName: config.dynamodb.tables.communications,
+          KeyConditionExpression: 'PK = :pk',
+          ExpressionAttributeValues: {
+            ':pk': `PROJECT#${projectId}`
+          }
+        }));
+  
+        return result.Items || [];
+      } catch (error) {
+        this.logger.error('Error getting project communications', { error, projectId });
+        return [];
+      }
+    }
+  
+    /**
+     * Get project details
+     * 
+     * @param projectId - Project ID
+     * @returns Project details or null if not found
+     */
+    private async getProject(projectId: string): Promise<any | null> {
+      try {
+        const result = await this.docClient.send(new GetCommand({
+          TableName: config.dynamodb.tables.projects,
+          Key: {
+            PK: `PROJECT#${projectId}`,
+            SK: 'METADATA'
+          }
+        }));
+  
+        return result.Item;
+      } catch (error) {
+        this.logger.error('Error getting project', { error, projectId });
+        return null;
+      }
+    }
+  
+    /**
+     * Get project estimate
+     * 
+     * @param projectId - Project ID
+     * @returns Latest estimate or null if not found
+     */
+    private async getProjectEstimate(projectId: string): Promise<any | null> {
+      try {
+        // Query for estimates with this project ID
+        const result = await this.docClient.send(new QueryCommand({
+          TableName: config.dynamodb.tables.estimates,
+          KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+          ExpressionAttributeValues: {
+            ':pk': `PROJECT#${projectId}`,
+            ':sk': 'ESTIMATE#'
+          },
+          ScanIndexForward: false, // Get newest first
+          Limit: 1
+        }));
+  
+        if (!result.Items || result.Items.length === 0) {
+          return null;
+        }
+  
+        return result.Items[0];
+      } catch (error) {
+        this.logger.error('Error getting project estimate', { error, projectId });
+        return null;
+      }
+    }
+  
+    /**
+     * Get user details
+     * 
+     * @param userId - User ID
+     * @returns User details or null if not found
+     */
+    private async getUser(userId: string): Promise<any | null> {
+      try {
+        const result = await this.docClient.send(new GetCommand({
+          TableName: config.dynamodb.tables.users,
+          Key: {
+            PK: `USER#${userId}`,
+            SK: 'METADATA'
+          }
+        }));
+  
+        return result.Item;
+      } catch (error) {
+        this.logger.error('Error getting user', { error, userId });
+        return null;
+      }
+    }
+  }

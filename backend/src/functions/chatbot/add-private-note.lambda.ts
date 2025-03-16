@@ -1,4 +1,4 @@
-// backend/src/functions/blueprints/process-blueprint.lambda.ts
+// backend/src/functions/chatbot/add-private-note.lambda.ts
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { z } from 'zod';
@@ -8,26 +8,28 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { Logger } from '../../utils/logger';
 import { errorResponse, successResponse } from '../../utils/response';
 import { validateAuth } from '../../utils/auth';
-import { BlueprintService } from '../../services/blueprint.service';
+import { ChatbotService } from '../../services/chatbot.service';
 
 // Initialize clients
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const s3Client = new S3Client({});
-const logger = new Logger('process-blueprint');
-const blueprintService = new BlueprintService(docClient, s3Client);
+const logger = new Logger('add-private-note');
+const chatbotService = new ChatbotService(docClient, s3Client);
 
 // Input validation schema
 const RequestSchema = z.object({
   projectId: z.string().uuid(),
-  blueprintS3Key: z.string(),
-  templateId: z.string().optional(),
+  itemId: z.string(), // Can be estimateItemId, inspectionItemId, etc.
+  itemType: z.string(), // Type of item (estimate, inspection, etc.)
+  content: z.string().min(1),
+  visibility: z.enum(['private', 'internal', 'customer']).default('private')
 });
 
 type RequestType = z.infer<typeof RequestSchema>;
 
 /**
- * Lambda function to process a blueprint PDF
+ * Lambda function to add a private note to a project item
  * 
  * @param event - API Gateway event
  * @returns API Gateway response
@@ -53,34 +55,65 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return errorResponse(400, { message: 'Invalid request format', details: error });
     }
 
-    // 3. Log operation start
-    logger.info('Processing blueprint', { 
+    // 3. Check if user is company staff or admin
+    if (user.role === 'customer') {
+      return errorResponse(403, { message: 'Customers cannot add private notes' });
+    }
+
+    // 4. Log operation start
+    logger.info('Adding private note', { 
       projectId: requestData.projectId,
-      blueprintS3Key: requestData.blueprintS3Key,
-      userId: user.id,
+      itemId: requestData.itemId,
+      itemType: requestData.itemType,
+      contentLength: requestData.content.length,
+      userId: user.id
     });
 
-    // 4. Process blueprint
-    const result = await blueprintService.processBlueprint(
+    // 5. Verify user's access to project
+    const hasAccess = await chatbotService.verifyProjectAccess(
       requestData.projectId,
-      requestData.blueprintS3Key,
-      user.companyId,
-      requestData.templateId
+      user.id,
+      user.role
     );
 
-    // 5. Return successful response
-    return successResponse(200, { 
-      message: 'Blueprint processed successfully',
-      data: result
+    if (!hasAccess) {
+      return errorResponse(403, { message: 'Access denied to this project' });
+    }
+
+    // 6. Add the private note
+    const note = await chatbotService.addPrivateNote({
+      projectId: requestData.projectId,
+      itemId: requestData.itemId,
+      itemType: requestData.itemType,
+      content: requestData.content,
+      visibility: requestData.visibility,
+      createdBy: user.id
+    });
+
+    // 7. Index the note for the knowledge base
+    await chatbotService.indexNote(note.noteId);
+
+    // 8. Return successful response
+    return successResponse(201, { 
+      message: 'Private note added successfully',
+      data: {
+        noteId: note.noteId,
+        projectId: note.projectId,
+        itemId: note.itemId,
+        itemType: note.itemType,
+        visibility: note.visibility,
+        created: note.created,
+        createdBy: note.createdBy
+      }
     });
   } catch (error) {
-    // 6. Handle and log errors
-    logger.error('Error processing blueprint', { error });
+    // 9. Handle and log errors
+    logger.error('Error adding private note', { error });
     
     if (error instanceof Error) {
       // Return appropriate error response based on error type
       if (error.name === 'ResourceNotFoundException') {
-        return errorResponse(404, { message: 'Project or blueprint not found' });
+        return errorResponse(404, { message: 'Project or item not found' });
       } else if (error.name === 'ValidationError') {
         return errorResponse(400, { message: error.message });
       } else if (error.name === 'AccessDeniedException') {

@@ -1,4 +1,4 @@
-// backend/src/functions/time-tracking/approve-timesheet.lambda.ts
+// backend/src/functions/inspections/complete-inspection.lambda.ts
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { z } from 'zod';
@@ -8,25 +8,34 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { Logger } from '../../utils/logger';
 import { errorResponse, successResponse } from '../../utils/response';
 import { validateAuth } from '../../utils/auth';
-import { TimeTrackingService } from '../../services/time-tracking.service';
+import { InspectionService } from '../../services/inspection.service';
+import { InspectionStatus } from '../../types/inspection.types';
 
 // Initialize clients
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
 const s3Client = new S3Client({});
-const logger = new Logger('approve-timesheet');
-const timeTrackingService = new TimeTrackingService(docClient, s3Client);
+const logger = new Logger('complete-inspection');
+const inspectionService = new InspectionService(docClient, s3Client);
 
 // Input validation schema
 const RequestSchema = z.object({
-  action: z.enum(['approve', 'reject']),
-  comment: z.string().optional()
+  // Items with responses
+  items: z.array(
+    z.object({
+      itemId: z.string(),
+      response: z.enum(['yes', 'no', 'n/a']),
+      comment: z.string().optional(),
+    })
+  ),
+  status: z.nativeEnum(InspectionStatus),
+  notes: z.string().optional(),
 });
 
 type RequestType = z.infer<typeof RequestSchema>;
 
 /**
- * Lambda function to approve or reject a timesheet
+ * Lambda function to complete an inspection with responses and update status
  * 
  * @param event - API Gateway event
  * @returns API Gateway response
@@ -41,19 +50,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // 2. Get parameters from path
     const projectId = event.pathParameters?.projectId;
-    const date = event.pathParameters?.date;
-    const userId = event.pathParameters?.userId;
+    const phase = event.pathParameters?.phase;
+    const inspectionId = event.pathParameters?.inspectionId;
 
-    if (!projectId || !date || !userId) {
+    if (!projectId || !phase || !inspectionId) {
       return errorResponse(400, { message: 'Missing required path parameters' });
     }
 
-    // 3. Validate date format
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return errorResponse(400, { message: 'Invalid date format, expected YYYY-MM-DD' });
-    }
-
-    // 4. Validate request body
+    // 3. Validate request body
     if (!event.body) {
       return errorResponse(400, { message: 'Missing request body' });
     }
@@ -66,58 +70,66 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return errorResponse(400, { message: 'Invalid request format', details: error });
     }
 
-    // 5. Check if user has permission to approve timesheets (admin or manager)
-    if (user.role !== 'admin' && user.role !== 'manager' && user.role !== 'foreman') {
-      return errorResponse(403, { message: 'Insufficient permissions to approve timesheets' });
-    }
-
-    // 6. Log operation start
-    logger.info(`${requestData.action.charAt(0).toUpperCase() + requestData.action.slice(1)}ing timesheet`, { 
+    // 4. Log operation start
+    logger.info('Completing inspection', { 
       projectId,
-      date,
-      userId,
-      approverId: user.id
+      phase,
+      inspectionId,
+      itemCount: requestData.items.length,
+      status: requestData.status,
+      userId: user.id,
     });
 
-    // 7. Approve or reject timesheet
-    let updatedTimesheet;
-    if (requestData.action === 'approve') {
-      updatedTimesheet = await timeTrackingService.approveTimesheet(
+    // 5. Get the checklist to update
+    const checklist = await inspectionService.getInspectionChecklist(
+      projectId,
+      phase,
+      inspectionId
+    );
+
+    if (!checklist) {
+      return errorResponse(404, { message: 'Inspection checklist not found' });
+    }
+
+    // 6. Update each item
+    for (const item of requestData.items) {
+      await inspectionService.updateInspectionItemResponse(
+        inspectionId,
         projectId,
-        date,
-        userId,
-        user.id
-      );
-    } else {
-      updatedTimesheet = await timeTrackingService.rejectTimesheet(
-        projectId,
-        date,
-        userId,
+        phase,
+        item.itemId,
+        item.response,
+        item.comment,
         user.id
       );
     }
 
-    if (!updatedTimesheet) {
-      return errorResponse(404, { message: 'Timesheet not found' });
-    }
+    // 7. Update status and complete the inspection
+    const completedDate = new Date().toISOString();
+    const updatedChecklist = await inspectionService.updateInspectionStatus(
+      projectId,
+      phase,
+      inspectionId,
+      requestData.status,
+      user.id,
+      completedDate
+    );
 
     // 8. Return successful response
-    const action = requestData.action === 'approve' ? 'approved' : 'rejected';
     return successResponse(200, { 
-      message: `Timesheet ${action} successfully`,
+      message: 'Inspection completed successfully',
       data: {
-        timesheetId: updatedTimesheet.timesheetId,
-        projectId: updatedTimesheet.projectId,
-        date: updatedTimesheet.date,
-        status: updatedTimesheet.status,
-        hours: updatedTimesheet.hours,
-        approvedBy: updatedTimesheet.approvedBy,
-        approvedDate: updatedTimesheet.approvedDate
+        inspectionId: updatedChecklist.inspectionId,
+        projectId: updatedChecklist.projectId,
+        phase: updatedChecklist.phase,
+        status: updatedChecklist.status,
+        completedDate: updatedChecklist.completedDate,
+        itemsUpdated: requestData.items.length
       }
     });
   } catch (error) {
     // 9. Handle and log errors
-    logger.error('Error approving/rejecting timesheet', { error });
+    logger.error('Error completing inspection', { error });
     
     if (error instanceof Error) {
       // Return appropriate error response based on error type

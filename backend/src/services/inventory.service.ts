@@ -1,107 +1,419 @@
-// backend/src/services/inventory.service.ts
 
-import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
-import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
-import { MongoClient } from 'mongodb';
+
+Start new chat
+Projects
+Chats
+Recents
+Verify GitHub Repository Files and Identify Remaining Tasks
+Pushing Updated Files to GitHub Repo
+Cloning a Git Repository to a New Folder
+Building a Worm Compost System
+Breath Control and Spiritual Mastery
+Optimizing GitHub API Uploads for Large Files
+Inventory Management Interfaces and Services
+Review GitHub Repo for Missing Files
+Implementing Modular ProjectService
+Completing EstimationService Implementation
+Completing Electrical Project Estimation Service
+Completing EstimationService Implementation
+Completing EstimationService Implementation
+Completing Estimation Service Implementation
+Comprehensive System for Electrical Contractors
+Reviewing Files to Build Clear-Desk.com
+Chatbot Service Template Completion
+Automating Business Processes
+Job Progress Tracking for Customer Invoices
+Getting Started with LLM Code Assistant
+Troubleshooting Blink Doorbell Alert Delays
+Dealing with Neighbor's Grass-Eating Bunny
+Tasty Uses for Leftover Smoked Pork Belly Burnt Ends
+Fixing Python import errors in code assistant
+Terminal UI with Note Memory
+Uploading Python Files for LLM Code Assistant
+Uploading .env File to Private Git Repo
+Protecting Your Software Idea When Hiring Developers
+Uploading LLM Code Assistant Files to GitHub
+Converting Visual Studio Extension to Python LLM Code Assistant
+View all
+Professional plan
+
+ER
+erik@erikrusekelectric.com
+ER
+
+All projects
+
+
+Electrical contractor management program
+Private
+Create a program to replace my back office
+
+
+
+
+3.7 Sonnet
+
+Choose style
+Electrical contractor management program
+No file chosen
+
+
+Verify GitHub Repository Files and Identify Remaining Tasks
+Last message 2 minutes ago 
+
+Pushing Updated Files to GitHub Repo
+Last message 11 minutes ago 
+
+Optimizing GitHub API Uploads for Large Files
+Last message 2 hours ago 
+
+Inventory Management Interfaces and Services
+Last message 3 hours ago 
+
+Review GitHub Repo for Missing Files
+Last message 3 hours ago 
+
+Implementing Modular ProjectService
+Last message 4 hours ago 
+
+Completing EstimationService Implementation
+Last message 16 hours ago 
+
+Completing Electrical Project Estimation Service
+Last message 17 hours ago 
+
+Completing EstimationService Implementation
+Last message 17 hours ago 
+
+Completing EstimationService Implementation
+Last message 18 hours ago 
+
+Completing Estimation Service Implementation
+Last message 20 hours ago 
+
+Comprehensive System for Electrical Contractors
+Last message 20 hours ago 
+
+Reviewing Files to Build Clear-Desk.com
+Last message 21 hours ago 
+
+Chatbot Service Template Completion
+Last message 22 hours ago 
+
+Automating Business Processes
+Last message 23 hours ago 
+
+Project knowledge
+
+
+“
+Need to review my shared files and also github repo erusek1, clear-desk. I need all files to follow the same structure as the shared templates. Always review github before coding looking to keep this as seamless as possible. all files are to be pushed to git hub and large files need to be seperated into chunks in order to not run out of memory trying to push a large file. THink more efficiently
+Edit
+27% of knowledge capacity used
+
+text
+updated inventory services
+2 minutes ago
+
+
+text
+GitHub API Size Limitations
+3 hours ago
+
+
+txt
+Inspection Service
+23 hours ago
+•
+Large file
+
+
+text
+Idea expanded
+23 hours ago
+
+
+txt
+SendGrid Service
+23 hours ago
+
+
+txt
+Time Tracking Service
+23 hours ago
+•
+Large file
+
+
+txt
+Inventory Service
+23 hours ago
+
+
+txt
+Auth Utility
+23 hours ago
+
+
+txt
+Response Utility
+23 hours ago
+
+
+txt
+Logger Utility
+23 hours ago
+
+
+txt
+Configuration Template
+23 hours ago
+
+
+txt
+Blueprint Type Definitions
+23 hours ago
+
+
+txt
+Service Layer Template
+23 hours ago
+
+
+text
+Idea refined
+23 hours ago
+
+
+txt
+React Component Template
+23 hours ago
+
+
+txt
+Lambda Function Template
+23 hours ago
+
+
+md
+Database Schema Design
+23 hours ago
+
+
+md
+API Design Guidelines
+23 hours ago
+
+
+md
+Git Workflow and Commit Standards
+23 hours ago
+
+
+md
+Coding Standards and Style Guide
+23 hours ago
+
+
+txt
+Project Directory Structure
+23 hours ago
+
+
+text
+Idea expanded
+1 day ago
+
+
+text
+Original idea
+1 day ago
+
+Claude
+Inspection Service.txt
+
+32.08 KB •1,120 lines
+•
+Formatting may be inconsistent from source
+
+// backend/src/services/inspection.service.ts
+
+import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { v4 as uuidv4 } from 'uuid';
 import { Logger } from '../utils/logger';
 import config from '../config';
-import { 
-  IInventoryLevel, 
-  IInventoryTransaction, 
-  IPurchaseOrder, 
-  IVendor,
-  IMaterialTakeoff,
-  ICsvImportResult,
-  TransactionType,
-  PurchaseOrderStatus
-} from '../types/inventory.types';
-import Papa from 'papaparse';
+import { SendGridService } from './sendgrid.service';
 
 /**
- * Inventory service for managing inventory operations
+ * Inspection status enum
  */
-export class InventoryService {
+export enum InspectionStatus {
+  PENDING = 'pending',
+  COMPLETED = 'completed',
+  FAILED = 'failed',
+  RESCHEDULED = 'rescheduled'
+}
+
+/**
+ * Inspection item interface
+ */
+export interface IInspectionItem {
+  itemId: string;
+  category: string;
+  question: string;
+  response: 'yes' | 'no' | 'n/a' | null;
+  comment?: string;
+  photos?: {
+    s3Key: string;
+    caption?: string;
+    uploadTime: string;
+  }[];
+  required: boolean;
+  estimateItemId?: string;
+}
+
+/**
+ * Inspection checklist interface
+ */
+export interface IInspectionChecklist {
+  inspectionId: string;
+  projectId: string;
+  phase: string; // rough, service, finish, etc.
+  status: InspectionStatus;
+  scheduledDate?: string;
+  completedDate?: string;
+  inspector?: string;
+  items: IInspectionItem[];
+  notes?: string;
+  created: string;
+  updated: string;
+  createdBy: string;
+  updatedBy: string;
+}
+
+/**
+ * Inspection template interface
+ */
+export interface IInspectionTemplate {
+  templateId: string;
+  companyId: string;
+  name: string;
+  phase: string;
+  items: {
+    category: string;
+    question: string;
+    required: boolean;
+  }[];
+  created: string;
+  updated: string;
+  createdBy: string;
+  updatedBy: string;
+}
+
+/**
+ * Inspection service for managing inspection checklists
+ */
+export class InspectionService {
   private logger: Logger;
-  private mongoClient: MongoClient | null = null;
-  private materialsCollection: any = null;
+  private sendGridService: SendGridService;
 
   constructor(
     private docClient: DynamoDBDocumentClient,
     private s3Client: S3Client
   ) {
-    this.logger = new Logger('InventoryService');
-    this.initMongo();
+    this.logger = new Logger('InspectionService');
+    this.sendGridService = new SendGridService();
   }
 
   /**
-   * Initialize MongoDB connection
-   */
-  private async initMongo(): Promise<void> {
-    try {
-      if (!this.mongoClient) {
-        this.mongoClient = new MongoClient(config.mongodb.uri);
-        await this.mongoClient.connect();
-        
-        const db = this.mongoClient.db(config.mongodb.dbName);
-        this.materialsCollection = db.collection(config.mongodb.collections.materials);
-        
-        this.logger.info('MongoDB connection established');
-      }
-    } catch (error) {
-      this.logger.error('Error connecting to MongoDB', { error });
-      throw error;
-    }
-  }
-
-  /**
-   * Get inventory levels for a company
+   * Generate an inspection checklist for a project phase
    * 
-   * @param companyId - Company ID
-   * @returns List of inventory levels
+   * @param projectId - Project ID
+   * @param phase - Project phase (rough, service, etc.)
+   * @param userId - User ID generating the checklist
+   * @param templateId - Optional template ID to use
+   * @param scheduledDate - Optional scheduled inspection date
+   * @returns Generated inspection checklist
    */
-  async getInventoryLevels(companyId: string): Promise<IInventoryLevel[]> {
+  async generateInspectionChecklist(
+    projectId: string,
+    phase: string,
+    userId: string,
+    templateId?: string,
+    scheduledDate?: string
+  ): Promise<IInspectionChecklist> {
     try {
-      const result = await this.docClient.send(new QueryCommand({
-        TableName: config.dynamodb.tables.inventory,
-        KeyConditionExpression: 'PK = :pk',
-        ExpressionAttributeValues: {
-          ':pk': `COMPANY#${companyId}`
+      const inspectionId = uuidv4();
+      const now = new Date().toISOString();
+      
+      // Get template or default items
+      const items = await this.getTemplateItems(projectId, phase, templateId);
+      
+      // Get estimate items for this phase to include in checklist
+      const estimateItems = await this.getEstimateItems(projectId, phase);
+      
+      // Create checklist record
+      const newChecklist: IInspectionChecklist = {
+        inspectionId,
+        projectId,
+        phase,
+        status: InspectionStatus.PENDING,
+        scheduledDate,
+        items: [
+          ...items,
+          ...estimateItems
+        ],
+        created: now,
+        updated: now,
+        createdBy: userId,
+        updatedBy: userId
+      };
+
+      // Save checklist to DynamoDB
+      await this.docClient.send(new PutCommand({
+        TableName: config.dynamodb.tables.inspectionChecklists,
+        Item: {
+          PK: `PROJECT#${projectId}`,
+          SK: `INSPECTION#${phase}#${inspectionId}`,
+          GSI1PK: `PHASE#${phase}`,
+          GSI1SK: `PROJECT#${projectId}`,
+          ...newChecklist
         }
       }));
 
-      return result.Items?.map(item => ({
-        materialId: item.materialId,
-        companyId: item.companyId,
-        currentQuantity: item.currentQuantity,
-        location: item.location,
-        lowStockThreshold: item.lowStockThreshold,
-        lastStockCheck: item.lastStockCheck,
-        created: item.created,
-        updated: item.updated,
-        createdBy: item.createdBy,
-        updatedBy: item.updatedBy
-      })) || [];
+      // Notify relevant parties about the scheduled inspection
+      if (scheduledDate) {
+        await this.notifyInspectionScheduled(projectId, phase, scheduledDate, inspectionId);
+      }
+
+      return newChecklist;
     } catch (error) {
-      this.logger.error('Error getting inventory levels', { error, companyId });
+      this.logger.error('Error generating inspection checklist', { error, projectId, phase });
       throw error;
     }
   }
 
   /**
-   * Get inventory level for a specific material
+   * Get inspection checklist by ID
    * 
-   * @param companyId - Company ID
-   * @param materialId - Material ID
-   * @returns Inventory level or null if not found
+   * @param projectId - Project ID
+   * @param phase - Project phase
+   * @param inspectionId - Inspection ID
+   * @returns Inspection checklist or null if not found
    */
-  async getInventoryLevel(companyId: string, materialId: string): Promise<IInventoryLevel | null> {
+  async getInspectionChecklist(
+    projectId: string,
+    phase: string,
+    inspectionId: string
+  ): Promise<IInspectionChecklist | null> {
     try {
       const result = await this.docClient.send(new GetCommand({
-        TableName: config.dynamodb.tables.inventory,
+        TableName: config.dynamodb.tables.inspectionChecklists,
         Key: {
-          PK: `COMPANY#${companyId}`,
-          SK: `INVENTORY#${materialId}`
+          PK: `PROJECT#${projectId}`,
+          SK: `INSPECTION#${phase}#${inspectionId}`
         }
       }));
 
@@ -109,321 +421,183 @@ export class InventoryService {
         return null;
       }
 
-      return {
-        materialId: result.Item.materialId,
-        companyId: result.Item.companyId,
-        currentQuantity: result.Item.currentQuantity,
-        location: result.Item.location,
-        lowStockThreshold: result.Item.lowStockThreshold,
-        lastStockCheck: result.Item.lastStockCheck,
-        created: result.Item.created,
-        updated: result.Item.updated,
-        createdBy: result.Item.createdBy,
-        updatedBy: result.Item.updatedBy
-      };
+      return result.Item as IInspectionChecklist;
     } catch (error) {
-      this.logger.error('Error getting inventory level', { error, companyId, materialId });
+      this.logger.error('Error getting inspection checklist', { error, projectId, phase, inspectionId });
       throw error;
     }
   }
 
   /**
-   * Update inventory level for a material
+   * List inspection checklists for a project
    * 
-   * @param companyId - Company ID
-   * @param materialId - Material ID
-   * @param quantity - New quantity
-   * @param userId - User ID making the update
-   * @param location - Optional storage location
-   * @param lowStockThreshold - Optional low stock threshold
-   * @returns Updated inventory level
+   * @param projectId - Project ID
+   * @param phase - Optional phase filter
+   * @returns List of inspection checklists
    */
-  async updateInventoryLevel(
-    companyId: string, 
-    materialId: string, 
-    quantity: number, 
-    userId: string,
-    location?: string,
-    lowStockThreshold?: number
-  ): Promise<IInventoryLevel> {
+  async listProjectInspections(
+    projectId: string,
+    phase?: string
+  ): Promise<IInspectionChecklist[]> {
     try {
-      // Check if inventory level exists
-      const existingLevel = await this.getInventoryLevel(companyId, materialId);
-      
-      if (existingLevel) {
-        // Update existing inventory level
-        const result = await this.docClient.send(new UpdateCommand({
-          TableName: config.dynamodb.tables.inventory,
-          Key: {
-            PK: `COMPANY#${companyId}`,
-            SK: `INVENTORY#${materialId}`
-          },
-          UpdateExpression: 'set currentQuantity = :qty, location = :loc, lowStockThreshold = :threshold, updated = :updated, updatedBy = :updatedBy',
-          ExpressionAttributeValues: {
-            ':qty': quantity,
-            ':loc': location || existingLevel.location,
-            ':threshold': lowStockThreshold !== undefined ? lowStockThreshold : existingLevel.lowStockThreshold,
-            ':updated': new Date().toISOString(),
-            ':updatedBy': userId
-          },
-          ReturnValues: 'ALL_NEW'
-        }));
+      let keyConditionExpression = 'PK = :pk AND begins_with(SK, :sk)';
+      let expressionAttributeValues: Record<string, any> = {
+        ':pk': `PROJECT#${projectId}`,
+        ':sk': 'INSPECTION#'
+      };
 
-        return {
-          materialId,
-          companyId,
-          currentQuantity: quantity,
-          location: location || existingLevel.location,
-          lowStockThreshold: lowStockThreshold !== undefined ? lowStockThreshold : existingLevel.lowStockThreshold,
-          lastStockCheck: existingLevel.lastStockCheck,
-          created: existingLevel.created,
-          updated: new Date().toISOString(),
-          createdBy: existingLevel.createdBy,
-          updatedBy: userId
+      // Add phase filter if provided
+      if (phase) {
+        keyConditionExpression = 'PK = :pk AND begins_with(SK, :sk)';
+        expressionAttributeValues = {
+          ':pk': `PROJECT#${projectId}`,
+          ':sk': `INSPECTION#${phase}#`
         };
-      } else {
-        // Create new inventory level
-        const now = new Date().toISOString();
-        const newLevel: IInventoryLevel = {
-          materialId,
-          companyId,
-          currentQuantity: quantity,
-          location,
-          lowStockThreshold,
-          created: now,
-          updated: now,
-          createdBy: userId,
-          updatedBy: userId
-        };
-
-        await this.docClient.send(new PutCommand({
-          TableName: config.dynamodb.tables.inventory,
-          Item: {
-            PK: `COMPANY#${companyId}`,
-            SK: `INVENTORY#${materialId}`,
-            GSI1PK: `INVENTORY#${materialId}`,
-            GSI1SK: `COMPANY#${companyId}`,
-            ...newLevel
-          }
-        }));
-
-        return newLevel;
       }
-    } catch (error) {
-      this.logger.error('Error updating inventory level', { error, companyId, materialId });
-      throw error;
-    }
-  }
 
-  /**
-   * Record an inventory transaction
-   * 
-   * @param transaction - Transaction data without ID
-   * @returns Created transaction
-   */
-  async recordTransaction(
-    transaction: Omit<IInventoryTransaction, 'transactionId' | 'created'>
-  ): Promise<IInventoryTransaction> {
-    try {
-      const transactionId = uuidv4();
-      const now = new Date().toISOString();
-      
-      // Create transaction record
-      const newTransaction: IInventoryTransaction = {
-        transactionId,
-        ...transaction,
-        created: now
-      };
-
-      // Save transaction to DynamoDB
-      await this.docClient.send(new PutCommand({
-        TableName: config.dynamodb.tables.inventoryTransactions,
-        Item: {
-          PK: `INVENTORY_TXN#${transactionId}`,
-          SK: 'METADATA',
-          GSI1PK: `COMPANY#${transaction.companyId}`,
-          GSI1SK: `INVENTORY_TXN#${now}`,
-          GSI2PK: `MATERIAL#${transaction.materialId}`,
-          GSI2SK: `INVENTORY_TXN#${now}`,
-          ...(transaction.projectId ? {
-            GSI3PK: `PROJECT#${transaction.projectId}`,
-            GSI3SK: `INVENTORY_TXN#${now}`
-          } : {}),
-          ...newTransaction
-        }
+      const result = await this.docClient.send(new QueryCommand({
+        TableName: config.dynamodb.tables.inspectionChecklists,
+        KeyConditionExpression: keyConditionExpression,
+        ExpressionAttributeValues: expressionAttributeValues
       }));
 
-      // Update inventory level based on transaction type
-      let quantityChange = 0;
-      switch (transaction.type) {
-        case TransactionType.PURCHASE:
-          quantityChange = transaction.quantity;
-          break;
-        case TransactionType.ALLOCATION:
-          quantityChange = -transaction.quantity;
-          break;
-        case TransactionType.RETURN:
-          quantityChange = transaction.quantity;
-          break;
-        case TransactionType.ADJUSTMENT:
-          quantityChange = transaction.quantity; // Quantity is the adjustment amount (positive or negative)
-          break;
-        default:
-          break;
+      return (result.Items || []) as IInspectionChecklist[];
+    } catch (error) {
+      this.logger.error('Error listing project inspections', { error, projectId, phase });
+      throw error;
+    }
+  }
+
+  /**
+   * Update inspection checklist status
+   * 
+   * @param projectId - Project ID
+   * @param phase - Project phase
+   * @param inspectionId - Inspection ID
+   * @param status - New status
+   * @param userId - User ID making the update
+   * @param completedDate - Optional completion date (required for COMPLETED status)
+   * @returns Updated inspection checklist
+   */
+  async updateInspectionStatus(
+    projectId: string,
+    phase: string,
+    inspectionId: string,
+    status: InspectionStatus,
+    userId: string,
+    completedDate?: string
+  ): Promise<IInspectionChecklist | null> {
+    try {
+      // Validate that completedDate is provided for COMPLETED status
+      if (status === InspectionStatus.COMPLETED && !completedDate) {
+        throw new Error('Completion date is required for COMPLETED status');
       }
 
-      if (quantityChange !== 0) {
-        // Get current inventory level
-        const currentLevel = await this.getInventoryLevel(transaction.companyId, transaction.materialId);
-        const currentQuantity = currentLevel?.currentQuantity || 0;
-        
-        // Update inventory level
-        await this.updateInventoryLevel(
-          transaction.companyId,
-          transaction.materialId,
-          currentQuantity + quantityChange,
-          transaction.createdBy,
-          currentLevel?.location,
-          currentLevel?.lowStockThreshold
+      // Prepare update expression
+      let updateExpression = 'set #status = :status, updated = :updated, updatedBy = :updatedBy';
+      const expressionAttributeNames = {
+        '#status': 'status'
+      };
+      const expressionAttributeValues: Record<string, any> = {
+        ':status': status,
+        ':updated': new Date().toISOString(),
+        ':updatedBy': userId
+      };
+
+      // Add completedDate if provided
+      if (completedDate) {
+        updateExpression += ', completedDate = :completedDate';
+        expressionAttributeValues[':completedDate'] = completedDate;
+      }
+
+      const result = await this.docClient.send(new UpdateCommand({
+        TableName: config.dynamodb.tables.inspectionChecklists,
+        Key: {
+          PK: `PROJECT#${projectId}`,
+          SK: `INSPECTION#${phase}#${inspectionId}`
+        },
+        UpdateExpression: updateExpression,
+        ExpressionAttributeNames: expressionAttributeNames,
+        ExpressionAttributeValues: expressionAttributeValues,
+        ReturnValues: 'ALL_NEW'
+      }));
+
+      if (!result.Attributes) {
+        return null;
+      }
+
+      // If inspection was completed or failed, notify relevant parties
+      if (
+        status === InspectionStatus.COMPLETED || 
+        status === InspectionStatus.FAILED
+      ) {
+        await this.notifyInspectionCompleted(
+          projectId, 
+          phase, 
+          inspectionId, 
+          status
         );
       }
 
-      return newTransaction;
+      return result.Attributes as IInspectionChecklist;
     } catch (error) {
-      this.logger.error('Error recording transaction', { error, transaction });
+      this.logger.error('Error updating inspection status', { error, projectId, phase, inspectionId });
       throw error;
     }
   }
 
   /**
-   * Get transactions for a material
+   * Update inspection item response
    * 
-   * @param companyId - Company ID
-   * @param materialId - Material ID
-   * @param limit - Optional result limit
-   * @returns List of transactions
+   * @param projectId - Project ID
+   * @param phase - Project phase
+   * @param inspectionId - Inspection ID
+   * @param itemId - Item ID
+   * @param response - Response value
+   * @param comment - Optional comment
+   * @param userId - User ID making the update
+   * @returns Updated inspection checklist
    */
-  async getMaterialTransactions(
-    companyId: string,
-    materialId: string,
-    limit?: number
-  ): Promise<IInventoryTransaction[]> {
+  async updateInspectionItemResponse(
+    projectId: string,
+    phase: string,
+    inspectionId: string,
+    itemId: string,
+    response: 'yes' | 'no' | 'n/a',
+    comment: string | undefined,
+    userId: string
+  ): Promise<IInspectionChecklist | null> {
     try {
-      const result = await this.docClient.send(new QueryCommand({
-        TableName: config.dynamodb.tables.inventoryTransactions,
-        IndexName: 'GSI2',
-        KeyConditionExpression: 'GSI2PK = :pk',
-        ExpressionAttributeValues: {
-          ':pk': `MATERIAL#${materialId}`
-        },
-        Limit: limit,
-        ScanIndexForward: false // Get newest first
-      }));
-
-      return (result.Items || []) as IInventoryTransaction[];
-    } catch (error) {
-      this.logger.error('Error getting material transactions', { error, companyId, materialId });
-      throw error;
-    }
-  }
-
-  /**
-   * Create a purchase order
-   * 
-   * @param purchaseOrder - Purchase order data without ID
-   * @returns Created purchase order
-   */
-  async createPurchaseOrder(
-    purchaseOrder: Omit<IPurchaseOrder, 'purchaseOrderId' | 'created' | 'updated'>
-  ): Promise<IPurchaseOrder> {
-    try {
-      const purchaseOrderId = uuidv4();
-      const now = new Date().toISOString();
-      
-      // Create PO record
-      const newPO: IPurchaseOrder = {
-        purchaseOrderId,
-        ...purchaseOrder,
-        created: now,
-        updated: now
-      };
-
-      // Save PO to DynamoDB
-      await this.docClient.send(new PutCommand({
-        TableName: config.dynamodb.tables.purchaseOrders,
-        Item: {
-          PK: `PO#${purchaseOrderId}`,
-          SK: 'METADATA',
-          GSI1PK: `COMPANY#${purchaseOrder.companyId}`,
-          GSI1SK: `PO#${now}`,
-          GSI2PK: `VENDOR#${purchaseOrder.vendorId}`,
-          GSI2SK: `PO#${now}`,
-          GSI3PK: `PROJECT#${purchaseOrder.projectId}`,
-          GSI3SK: `PO#${now}`,
-          ...newPO
-        }
-      }));
-
-      return newPO;
-    } catch (error) {
-      this.logger.error('Error creating purchase order', { error, purchaseOrder });
-      throw error;
-    }
-  }
-
-  /**
-   * Get purchase order by ID
-   * 
-   * @param purchaseOrderId - Purchase order ID
-   * @returns Purchase order or null if not found
-   */
-  async getPurchaseOrder(purchaseOrderId: string): Promise<IPurchaseOrder | null> {
-    try {
-      const result = await this.docClient.send(new GetCommand({
-        TableName: config.dynamodb.tables.purchaseOrders,
-        Key: {
-          PK: `PO#${purchaseOrderId}`,
-          SK: 'METADATA'
-        }
-      }));
-
-      if (!result.Item) {
-        return null;
+      // Get existing checklist
+      const checklist = await this.getInspectionChecklist(projectId, phase, inspectionId);
+      if (!checklist) {
+        throw new Error('Inspection checklist not found');
       }
 
-      return result.Item as IPurchaseOrder;
-    } catch (error) {
-      this.logger.error('Error getting purchase order', { error, purchaseOrderId });
-      throw error;
-    }
-  }
+      // Find and update the item
+      const itemIndex = checklist.items.findIndex(item => item.itemId === itemId);
+      if (itemIndex === -1) {
+        throw new Error('Inspection item not found');
+      }
 
-  /**
-   * Update purchase order status
-   * 
-   * @param purchaseOrderId - Purchase order ID
-   * @param status - New status
-   * @param userId - User ID making the update
-   * @returns Updated purchase order
-   */
-  async updatePurchaseOrderStatus(
-    purchaseOrderId: string,
-    status: PurchaseOrderStatus,
-    userId: string
-  ): Promise<IPurchaseOrder | null> {
-    try {
+      // Update checklist items
+      const updatedItems = [...checklist.items];
+      updatedItems[itemIndex] = {
+        ...updatedItems[itemIndex],
+        response,
+        comment: comment || updatedItems[itemIndex].comment
+      };
+
+      // Update the checklist in DynamoDB
       const result = await this.docClient.send(new UpdateCommand({
-        TableName: config.dynamodb.tables.purchaseOrders,
+        TableName: config.dynamodb.tables.inspectionChecklists,
         Key: {
-          PK: `PO#${purchaseOrderId}`,
-          SK: 'METADATA'
+          PK: `PROJECT#${projectId}`,
+          SK: `INSPECTION#${phase}#${inspectionId}`
         },
-        UpdateExpression: 'set #status = :status, updated = :updated, updatedBy = :updatedBy',
-        ExpressionAttributeNames: {
-          '#status': 'status'
-        },
+        UpdateExpression: 'set items = :items, updated = :updated, updatedBy = :updatedBy',
         ExpressionAttributeValues: {
-          ':status': status,
+          ':items': updatedItems,
           ':updated': new Date().toISOString(),
           ':updatedBy': userId
         },
@@ -434,800 +608,526 @@ export class InventoryService {
         return null;
       }
 
-      return result.Attributes as IPurchaseOrder;
+      return result.Attributes as IInspectionChecklist;
     } catch (error) {
-      this.logger.error('Error updating purchase order status', { error, purchaseOrderId });
+      this.logger.error('Error updating inspection item response', { 
+        error, projectId, phase, inspectionId, itemId 
+      });
       throw error;
     }
   }
 
   /**
-   * Get a list of purchase orders
+   * Add photo to inspection item
    * 
-   * @param companyId - Company ID
-   * @param status - Optional status filter
-   * @param vendorId - Optional vendor filter
-   * @param projectId - Optional project filter
-   * @returns List of purchase orders
+   * @param projectId - Project ID
+   * @param phase - Project phase
+   * @param inspectionId - Inspection ID
+   * @param itemId - Item ID
+   * @param fileKey - S3 file key
+   * @param caption - Optional photo caption
+   * @param userId - User ID adding the photo
+   * @returns Updated inspection checklist
    */
-  async listPurchaseOrders(
-    companyId: string,
-    status?: PurchaseOrderStatus,
-    vendorId?: string,
-    projectId?: string
-  ): Promise<IPurchaseOrder[]> {
+  async addPhotoToInspectionItem(
+    projectId: string,
+    phase: string,
+    inspectionId: string,
+    itemId: string,
+    fileKey: string,
+    caption: string | undefined,
+    userId: string
+  ): Promise<IInspectionChecklist | null> {
     try {
-      let queryParams: any = {
-        TableName: config.dynamodb.tables.purchaseOrders,
-        IndexName: 'GSI1',
-        KeyConditionExpression: 'GSI1PK = :pk',
-        ExpressionAttributeValues: {
-          ':pk': `COMPANY#${companyId}`
-        }
-      };
-
-      // Add filters if provided
-      if (status || vendorId || projectId) {
-        let filterExpression = '';
-        const expressionAttributeValues: any = {
-          ':pk': `COMPANY#${companyId}`
-        };
-
-        if (status) {
-          filterExpression += '#status = :status';
-          expressionAttributeValues[':status'] = status;
-        }
-
-        if (vendorId) {
-          if (filterExpression) filterExpression += ' AND ';
-          filterExpression += 'vendorId = :vendorId';
-          expressionAttributeValues[':vendorId'] = vendorId;
-        }
-
-        if (projectId) {
-          if (filterExpression) filterExpression += ' AND ';
-          filterExpression += 'projectId = :projectId';
-          expressionAttributeValues[':projectId'] = projectId;
-        }
-
-        queryParams.FilterExpression = filterExpression;
-        queryParams.ExpressionAttributeValues = expressionAttributeValues;
-
-        if (status) {
-          queryParams.ExpressionAttributeNames = {
-            '#status': 'status'
-          };
-        }
+      // Get existing checklist
+      const checklist = await this.getInspectionChecklist(projectId, phase, inspectionId);
+      if (!checklist) {
+        throw new Error('Inspection checklist not found');
       }
 
-      const result = await this.docClient.send(new QueryCommand(queryParams));
+      // Find the item
+      const itemIndex = checklist.items.findIndex(item => item.itemId === itemId);
+      if (itemIndex === -1) {
+        throw new Error('Inspection item not found');
+      }
 
-      return (result.Items || []) as IPurchaseOrder[];
+      // Create a new photo
+      const newPhoto = {
+        s3Key: fileKey,
+        caption,
+        uploadTime: new Date().toISOString()
+      };
+
+      // Update the item's photos
+      const updatedItems = [...checklist.items];
+      updatedItems[itemIndex] = {
+        ...updatedItems[itemIndex],
+        photos: [...(updatedItems[itemIndex].photos || []), newPhoto]
+      };
+
+      // Update the checklist in DynamoDB
+      const result = await this.docClient.send(new UpdateCommand({
+        TableName: config.dynamodb.tables.inspectionChecklists,
+        Key: {
+          PK: `PROJECT#${projectId}`,
+          SK: `INSPECTION#${phase}#${inspectionId}`
+        },
+        UpdateExpression: 'set items = :items, updated = :updated, updatedBy = :updatedBy',
+        ExpressionAttributeValues: {
+          ':items': updatedItems,
+          ':updated': new Date().toISOString(),
+          ':updatedBy': userId
+        },
+        ReturnValues: 'ALL_NEW'
+      }));
+
+      if (!result.Attributes) {
+        return null;
+      }
+
+      return result.Attributes as IInspectionChecklist;
     } catch (error) {
-      this.logger.error('Error listing purchase orders', { error, companyId });
+      this.logger.error('Error adding photo to inspection item', { 
+        error, projectId, phase, inspectionId, itemId 
+      });
       throw error;
     }
   }
 
   /**
-   * Create a vendor
+   * Generate signed URL for photo upload
    * 
-   * @param vendor - Vendor data without ID
-   * @returns Created vendor
+   * @param projectId - Project ID
+   * @param phase - Project phase
+   * @param inspectionId - Inspection ID
+   * @param fileName - Original file name
+   * @returns Signed URL and file key
    */
-  async createVendor(
-    vendor: Omit<IVendor, 'vendorId' | 'created' | 'updated'>
-  ): Promise<IVendor> {
+  async generatePhotoUploadUrl(
+    projectId: string,
+    phase: string,
+    inspectionId: string,
+    fileName: string
+  ): Promise<{ url: string, fileKey: string }> {
     try {
-      const vendorId = uuidv4();
+      const fileExtension = fileName.split('.').pop()?.toLowerCase() || 'jpg';
+      const fileKey = `inspections/${projectId}/${phase}/${inspectionId}/${uuidv4()}.${fileExtension}`;
+      
+      const command = new PutObjectCommand({
+        Bucket: config.s3.buckets.files,
+        Key: fileKey,
+        ContentType: `image/${fileExtension === 'jpg' ? 'jpeg' : fileExtension}`
+      });
+      
+      const signedUrl = await getSignedUrl(this.s3Client, command, { expiresIn: 3600 });
+      
+      return {
+        url: signedUrl,
+        fileKey
+      };
+    } catch (error) {
+      this.logger.error('Error generating photo upload URL', { error, projectId, phase, inspectionId });
+      throw error;
+    }
+  }
+
+  /**
+   * Create inspection template
+   * 
+   * @param template - Template data
+   * @returns Created template
+   */
+  async createInspectionTemplate(
+    template: Omit<IInspectionTemplate, 'templateId' | 'created' | 'updated'>
+  ): Promise<IInspectionTemplate> {
+    try {
+      const templateId = uuidv4();
       const now = new Date().toISOString();
       
-      // Create vendor record
-      const newVendor: IVendor = {
-        vendorId,
-        ...vendor,
+      // Create template record
+      const newTemplate: IInspectionTemplate = {
+        templateId,
+        ...template,
         created: now,
         updated: now
       };
 
-      // Save vendor to DynamoDB
+      // Save template to DynamoDB
       await this.docClient.send(new PutCommand({
-        TableName: config.dynamodb.tables.vendors,
+        TableName: config.dynamodb.tables.inspectionTemplates,
         Item: {
-          PK: `VENDOR#${vendorId}`,
-          SK: 'METADATA',
-          GSI1PK: `COMPANY#${vendor.companyId}`,
-          GSI1SK: `VENDOR#${vendor.name}`,
-          ...newVendor
+          PK: `COMPANY#${template.companyId}`,
+          SK: `TEMPLATE#${template.phase}#${templateId}`,
+          GSI1PK: `TEMPLATE#${template.phase}`,
+          GSI1SK: `COMPANY#${template.companyId}`,
+          ...newTemplate
         }
       }));
 
-      return newVendor;
+      return newTemplate;
     } catch (error) {
-      this.logger.error('Error creating vendor', { error, vendor });
+      this.logger.error('Error creating inspection template', { error, template });
       throw error;
     }
   }
 
   /**
-   * Get vendor by ID
-   * 
-   * @param vendorId - Vendor ID
-   * @returns Vendor or null if not found
-   */
-  async getVendor(vendorId: string): Promise<IVendor | null> {
-    try {
-      const result = await this.docClient.send(new GetCommand({
-        TableName: config.dynamodb.tables.vendors,
-        Key: {
-          PK: `VENDOR#${vendorId}`,
-          SK: 'METADATA'
-        }
-      }));
-
-      if (!result.Item) {
-        return null;
-      }
-
-      return result.Item as IVendor;
-    } catch (error) {
-      this.logger.error('Error getting vendor', { error, vendorId });
-      throw error;
-    }
-  }
-
-  /**
-   * Get all vendors for a company
+   * List inspection templates for a company and phase
    * 
    * @param companyId - Company ID
-   * @returns List of vendors
+   * @param phase - Optional phase filter
+   * @returns List of inspection templates
    */
-  async getVendors(companyId: string): Promise<IVendor[]> {
-    try {
-      const result = await this.docClient.send(new QueryCommand({
-        TableName: config.dynamodb.tables.vendors,
-        IndexName: 'GSI1',
-        KeyConditionExpression: 'GSI1PK = :pk',
-        ExpressionAttributeValues: {
-          ':pk': `COMPANY#${companyId}`
-        }
-      }));
-
-      return (result.Items || []) as IVendor[];
-    } catch (error) {
-      this.logger.error('Error getting vendors', { error, companyId });
-      throw error;
-    }
-  }
-
-  /**
-   * Create a material takeoff from an estimate
-   * 
-   * @param projectId - Project ID
-   * @param estimateId - Estimate ID
-   * @param userId - User ID creating the takeoff
-   * @returns Created material takeoff
-   */
-  async createMaterialTakeoff(
-    projectId: string,
-    estimateId: string,
-    userId: string
-  ): Promise<IMaterialTakeoff> {
-    try {
-      // Get the estimate
-      const estimate = await this.getEstimate(estimateId, projectId);
-      if (!estimate) {
-        throw new Error('Estimate not found');
-      }
-
-      // Get company ID from the project
-      const project = await this.getProject(projectId);
-      if (!project) {
-        throw new Error('Project not found');
-      }
-
-      const companyId = project.companyId;
-      const takeoffId = uuidv4();
-      const now = new Date().toISOString();
-
-      // Calculate materials needed based on estimate
-      const materials = await this.calculateMaterialsFromEstimate(estimate, companyId);
-      
-      // Create takeoff record
-      const takeoff: IMaterialTakeoff = {
-        takeoffId,
-        projectId,
-        estimateId,
-        status: 'created',
-        version: 1,
-        items: materials,
-        created: now,
-        updated: now,
-        createdBy: userId,
-        updatedBy: userId
-      };
-
-      // Save takeoff to DynamoDB
-      await this.docClient.send(new PutCommand({
-        TableName: config.dynamodb.tables.materialsTakeoff,
-        Item: {
-          PK: `PROJECT#${projectId}`,
-          SK: `TAKEOFF#${takeoffId}`,
-          GSI1PK: `TAKEOFF#${takeoffId}`,
-          GSI1SK: `PROJECT#${projectId}`,
-          ...takeoff
-        }
-      }));
-
-      return takeoff;
-    } catch (error) {
-      this.logger.error('Error creating material takeoff', { error, projectId, estimateId });
-      throw error;
-    }
-  }
-
-  /**
-   * Get a material takeoff by ID
-   * 
-   * @param projectId - Project ID
-   * @param takeoffId - Takeoff ID
-   * @returns Material takeoff or null if not found
-   */
-  async getMaterialTakeoff(projectId: string, takeoffId: string): Promise<IMaterialTakeoff | null> {
-    try {
-      const result = await this.docClient.send(new GetCommand({
-        TableName: config.dynamodb.tables.materialsTakeoff,
-        Key: {
-          PK: `PROJECT#${projectId}`,
-          SK: `TAKEOFF#${takeoffId}`
-        }
-      }));
-
-      if (!result.Item) {
-        return null;
-      }
-
-      return result.Item as IMaterialTakeoff;
-    } catch (error) {
-      this.logger.error('Error getting material takeoff', { error, projectId, takeoffId });
-      throw error;
-    }
-  }
-
-  /**
-   * Get all material takeoffs for a project
-   * 
-   * @param projectId - Project ID
-   * @returns List of material takeoffs
-   */
-  async getProjectMaterialTakeoffs(projectId: string): Promise<IMaterialTakeoff[]> {
-    try {
-      const result = await this.docClient.send(new QueryCommand({
-        TableName: config.dynamodb.tables.materialsTakeoff,
-        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-        ExpressionAttributeValues: {
-          ':pk': `PROJECT#${projectId}`,
-          ':sk': 'TAKEOFF#'
-        }
-      }));
-
-      return (result.Items || []) as IMaterialTakeoff[];
-    } catch (error) {
-      this.logger.error('Error getting project material takeoffs', { error, projectId });
-      throw error;
-    }
-  }
-
-  /**
-   * Import inventory from CSV
-   * 
-   * @param companyId - Company ID
-   * @param fileKey - S3 file key for the CSV
-   * @param userId - User ID performing the import
-   * @returns Import result
-   */
-  async importInventoryFromCsv(
+  async listInspectionTemplates(
     companyId: string,
-    fileKey: string,
-    userId: string
-  ): Promise<ICsvImportResult> {
+    phase?: string
+  ): Promise<IInspectionTemplate[]> {
     try {
-      // Get CSV file from S3
-      const fileData = await this.getFileFromS3(fileKey);
-      
-      // Parse CSV
-      const parsedData = await this.parseCSV(fileData);
-      
-      const result: ICsvImportResult = {
-        totalRows: parsedData.data.length,
-        successRows: 0,
-        failedRows: 0,
-        errors: [],
-        importedItems: []
+      let keyConditionExpression = 'PK = :pk AND begins_with(SK, :sk)';
+      let expressionAttributeValues: Record<string, any> = {
+        ':pk': `COMPANY#${companyId}`,
+        ':sk': 'TEMPLATE#'
       };
 
-      // Process each row
-      for (let i = 0; i < parsedData.data.length; i++) {
-        const row = parsedData.data[i];
-        try {
-          // Validate row
-          if (!row.id && !row.sku && !row.materialId) {
-            throw new Error('Material identifier (id, sku, or materialId) is required');
-          }
-          
-          if (row.quantity === undefined || row.quantity === null) {
-            throw new Error('Quantity is required');
-          }
-
-          // Get material ID (prefer materialId, then id, then sku)
-          const materialId = row.materialId || row.id || row.sku;
-          const quantity = parseFloat(row.quantity);
-          
-          if (isNaN(quantity)) {
-            throw new Error('Quantity must be a number');
-          }
-
-          // Update inventory level
-          await this.updateInventoryLevel(
-            companyId,
-            materialId,
-            quantity,
-            userId,
-            row.location,
-            row.lowStockThreshold ? parseFloat(row.lowStockThreshold) : undefined
-          );
-
-          // Add to imported items
-          result.importedItems.push({
-            materialId,
-            name: row.name || 'Unknown',
-            quantity
-          });
-
-          result.successRows++;
-        } catch (error: any) {
-          result.failedRows++;
-          result.errors.push({
-            row: i + 1, // 1-based row number for user-friendliness
-            message: error.message || 'Unknown error'
-          });
-        }
+      // Add phase filter if provided
+      if (phase) {
+        keyConditionExpression = 'PK = :pk AND begins_with(SK, :sk)';
+        expressionAttributeValues = {
+          ':pk': `COMPANY#${companyId}`,
+          ':sk': `TEMPLATE#${phase}#`
+        };
       }
 
-      return result;
+      const result = await this.docClient.send(new QueryCommand({
+        TableName: config.dynamodb.tables.inspectionTemplates,
+        KeyConditionExpression: keyConditionExpression,
+        ExpressionAttributeValues: expressionAttributeValues
+      }));
+
+      return (result.Items || []) as IInspectionTemplate[];
     } catch (error) {
-      this.logger.error('Error importing inventory from CSV', { error, companyId, fileKey });
+      this.logger.error('Error listing inspection templates', { error, companyId, phase });
       throw error;
     }
   }
 
   /**
-   * Export inventory to CSV
-   * 
-   * @param companyId - Company ID
-   * @returns S3 file key for the generated CSV
-   */
-  async exportInventoryToCsv(companyId: string): Promise<string> {
-    try {
-      // Get all inventory levels
-      const inventoryLevels = await this.getInventoryLevels(companyId);
-      
-      // Create CSV data
-      const csvData = await this.createInventoryCsv(inventoryLevels, companyId);
-      
-      // Upload to S3
-      const fileKey = `exports/${companyId}/inventory-${new Date().toISOString()}.csv`;
-      await this.uploadToS3(fileKey, csvData, 'text/csv');
-      
-      return fileKey;
-    } catch (error) {
-      this.logger.error('Error exporting inventory to CSV', { error, companyId });
-      throw error;
-    }
-  }
-
-  /**
-   * Get low stock items
-   * 
-   * @param companyId - Company ID
-   * @returns List of low stock items
-   */
-  async getLowStockItems(companyId: string): Promise<{
-    materialId: string;
-    name: string;
-    currentQuantity: number;
-    lowStockThreshold: number;
-    deficit: number;
-  }[]> {
-    try {
-      // Get all inventory levels
-      const inventoryLevels = await this.getInventoryLevels(companyId);
-      
-      // Filter for low stock items
-      const lowStockItems = [];
-      
-      for (const item of inventoryLevels) {
-        if (
-          item.lowStockThreshold !== undefined && 
-          item.currentQuantity < item.lowStockThreshold
-        ) {
-          // Get material name from MongoDB
-          const material = await this.getMaterial(item.materialId);
-          
-          lowStockItems.push({
-            materialId: item.materialId,
-            name: material?.name || 'Unknown Material',
-            currentQuantity: item.currentQuantity,
-            lowStockThreshold: item.lowStockThreshold,
-            deficit: item.lowStockThreshold - item.currentQuantity
-          });
-        }
-      }
-      
-      // Sort by deficit (highest first)
-      return lowStockItems.sort((a, b) => b.deficit - a.deficit);
-    } catch (error) {
-      this.logger.error('Error getting low stock items', { error, companyId });
-      throw error;
-    }
-  }
-
-  /**
-   * Get materials needed for project completion
+   * Get template items
    * 
    * @param projectId - Project ID
-   * @returns List of materials needed
+   * @param phase - Project phase
+   * @param templateId - Optional template ID
+   * @returns List of inspection items
    */
-  async getMaterialsNeededForProject(projectId: string): Promise<{
-    materialId: string;
-    name: string;
-    quantityNeeded: number;
-    quantityInStock: number;
-    quantityToOrder: number;
-  }[]> {
+  private async getTemplateItems(
+    projectId: string,
+    phase: string,
+    templateId?: string
+  ): Promise<IInspectionItem[]> {
     try {
-      // Get project
+      let items: IInspectionItem[] = [];
+
+      // Get project to retrieve company ID
       const project = await this.getProject(projectId);
       if (!project) {
         throw new Error('Project not found');
       }
 
-      const companyId = project.companyId;
+      // If templateId is provided, use that specific template
+      if (templateId) {
+        const template = await this.getTemplate(project.companyId, phase, templateId);
+        if (template) {
+          items = template.items.map(item => ({
+            itemId: uuidv4(),
+            category: item.category,
+            question: item.question,
+            response: null,
+            required: item.required
+          }));
+        }
+      } else {
+        // Get default template for this phase
+        const templates = await this.listInspectionTemplates(project.companyId, phase);
+        if (templates.length > 0) {
+          // Use the first template as default
+          items = templates[0].items.map(item => ({
+            itemId: uuidv4(),
+            category: item.category,
+            question: item.question,
+            response: null,
+            required: item.required
+          }));
+        }
+      }
 
-      // Get the latest material takeoff
-      const takeoffs = await this.getProjectMaterialTakeoffs(projectId);
-      if (takeoffs.length === 0) {
+      // If no templates were found, use basic default items
+      if (items.length === 0) {
+        // Create default items based on phase
+        switch (phase) {
+          case 'rough':
+            items = this.getDefaultRoughItems();
+            break;
+          case 'service':
+            items = this.getDefaultServiceItems();
+            break;
+          case 'finish':
+            items = this.getDefaultFinishItems();
+            break;
+          default:
+            items = this.getDefaultGeneralItems();
+        }
+      }
+
+      return items;
+    } catch (error) {
+      this.logger.error('Error getting template items', { error, projectId, phase, templateId });
+      return this.getDefaultGeneralItems(); // Fallback to default items
+    }
+  }
+
+  /**
+   * Get default rough inspection items
+   * 
+   * @returns List of default rough inspection items
+   */
+  private getDefaultRoughItems(): IInspectionItem[] {
+    return [
+      {
+        itemId: uuidv4(),
+        category: 'Electrical Box Installation',
+        question: 'Are boxes securely fastened to studs/joists?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Electrical Box Installation',
+        question: 'Are the correct box sizes used for wire fill?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Wiring',
+        question: 'Are staples within 12" of boxes and then every 4 feet?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Wiring',
+        question: 'Are all grounds properly connected?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Wiring',
+        question: 'Is wire sizing appropriate for the circuits?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Drilling/Notching',
+        question: 'Are holes drilled in appropriate locations in studs/joists?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Drilling/Notching',
+        question: 'Are nail plates installed where needed?',
+        response: null,
+        required: true
+      }
+    ];
+  }
+
+  /**
+   * Get default service inspection items
+   * 
+   * @returns List of default service inspection items
+   */
+  private getDefaultServiceItems(): IInspectionItem[] {
+    return [
+      {
+        itemId: uuidv4(),
+        category: 'Service Panel',
+        question: 'Is the service panel securely mounted?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Service Panel',
+        question: 'Is proper grounding and bonding in place?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Service Entrance',
+        question: 'Are service entrance conductors properly sized?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Service Entrance',
+        question: 'Is weatherhead properly installed?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Grounding',
+        question: 'Is the grounding electrode system complete?',
+        response: null,
+        required: true
+      }
+    ];
+  }
+
+  /**
+   * Get default finish inspection items
+   * 
+   * @returns List of default finish inspection items
+   */
+  private getDefaultFinishItems(): IInspectionItem[] {
+    return [
+      {
+        itemId: uuidv4(),
+        category: 'Devices',
+        question: 'Are all receptacles securely installed and level?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Devices',
+        question: 'Are GFCI/AFCI receptacles installed where required?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Fixtures',
+        question: 'Are all lighting fixtures securely mounted?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Fixtures',
+        question: 'Do all fixtures work properly?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Panel',
+        question: 'Is the panel directory accurately labeled?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Testing',
+        question: 'Have all circuits been tested for proper operation?',
+        response: null,
+        required: true
+      }
+    ];
+  }
+
+  /**
+   * Get default general inspection items
+   * 
+   * @returns List of default general inspection items
+   */
+  private getDefaultGeneralItems(): IInspectionItem[] {
+    return [
+      {
+        itemId: uuidv4(),
+        category: 'General',
+        question: 'Does installation match approved plans?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'General',
+        question: 'Are all materials listed and labeled?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Safety',
+        question: 'Are all electrical hazards addressed?',
+        response: null,
+        required: true
+      },
+      {
+        itemId: uuidv4(),
+        category: 'Code Compliance',
+        question: 'Does installation comply with NEC requirements?',
+        response: null,
+        required: true
+      }
+    ];
+  }
+
+  /**
+   * Get estimate items for a phase
+   * 
+   * @param projectId - Project ID
+   * @param phase - Project phase
+   * @returns List of inspection items derived from estimate
+   */
+  private async getEstimateItems(projectId: string, phase: string): Promise<IInspectionItem[]> {
+    try {
+      // Get latest estimate for project
+      const estimate = await this.getProjectEstimate(projectId);
+      if (!estimate) {
         return [];
       }
 
-      // Get the most recent takeoff
-      const latestTakeoff = takeoffs.sort((a, b) => 
-        new Date(b.created).getTime() - new Date(a.created).getTime()
-      )[0];
+      const items: IInspectionItem[] = [];
 
-      // Get current inventory levels
-      const inventoryMap = new Map<string, number>();
-      const inventoryLevels = await this.getInventoryLevels(companyId);
-      
-      for (const level of inventoryLevels) {
-        inventoryMap.set(level.materialId, level.currentQuantity);
-      }
-
-      // Calculate materials needed
-      const materialsNeeded = [];
-      
-      for (const item of latestTakeoff.items) {
-        const currentStock = inventoryMap.get(item.materialId) || 0;
-        const toOrder = Math.max(0, item.adjustedQuantity - currentStock);
-        
-        // Get material name from MongoDB
-        const material = await this.getMaterial(item.materialId);
-        
-        materialsNeeded.push({
-          materialId: item.materialId,
-          name: material?.name || 'Unknown Material',
-          quantityNeeded: item.adjustedQuantity,
-          quantityInStock: currentStock,
-          quantityToOrder: toOrder
-        });
-      }
-      
-      // Sort by quantity to order (highest first)
-      return materialsNeeded.sort((a, b) => b.quantityToOrder - a.quantityToOrder);
-    } catch (error) {
-      this.logger.error('Error getting materials needed for project', { error, projectId });
-      throw error;
-    }
-  }
-
-  /**
-   * Get file from S3
-   * 
-   * @param fileKey - S3 file key
-   * @returns File data as string
-   */
-  private async getFileFromS3(fileKey: string): Promise<string> {
-    try {
-      const result = await this.s3Client.send(new GetObjectCommand({
-        Bucket: config.s3.buckets.files,
-        Key: fileKey
-      }));
-
-      const streamToString = (stream: any): Promise<string> => {
-        return new Promise((resolve, reject) => {
-          const chunks: any[] = [];
-          stream.on('data', (chunk: any) => chunks.push(chunk));
-          stream.on('error', reject);
-          stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-        });
-      };
-
-      if (!result.Body) {
-        throw new Error('Empty file');
-      }
-
-      return streamToString(result.Body);
-    } catch (error) {
-      this.logger.error('Error getting file from S3', { error, fileKey });
-      throw error;
-    }
-  }
-
-  /**
-   * Upload file to S3
-   * 
-   * @param fileKey - S3 file key
-   * @param data - File data
-   * @param contentType - Content type
-   * @returns S3 file key
-   */
-  private async uploadToS3(fileKey: string, data: string, contentType: string): Promise<string> {
-    try {
-      await this.s3Client.send(new PutObjectCommand({
-        Bucket: config.s3.buckets.files,
-        Key: fileKey,
-        Body: data,
-        ContentType: contentType
-      }));
-
-      return fileKey;
-    } catch (error) {
-      this.logger.error('Error uploading to S3', { error, fileKey });
-      throw error;
-    }
-  }
-
-  /**
-   * Parse CSV data
-   * 
-   * @param csvData - CSV data as string
-   * @returns Parsed CSV data
-   */
-  private parseCSV(csvData: string): Promise<Papa.ParseResult<any>> {
-    return new Promise((resolve, reject) => {
-      Papa.parse(csvData, {
-        header: true,
-        skipEmptyLines: true,
-        dynamicTyping: true,
-        complete: (results) => {
-          resolve(results);
-        },
-        error: (error) => {
-          reject(error);
-        }
-      });
-    });
-  }
-
-  /**
-   * Create CSV data from inventory levels
-   * 
-   * @param inventoryLevels - Inventory levels
-   * @param companyId - Company ID
-   * @returns CSV data as string
-   */
-  private async createInventoryCsv(inventoryLevels: IInventoryLevel[], companyId: string): Promise<string> {
-    try {
-      const rows = [];
-      
-      // Add header row
-      rows.push([
-        'materialId',
-        'name',
-        'category',
-        'subcategory',
-        'currentQuantity',
-        'location',
-        'lowStockThreshold',
-        'lastStockCheck'
-      ].join(','));
-      
-      // Add data rows
-      for (const level of inventoryLevels) {
-        // Get material details from MongoDB
-        const material = await this.getMaterial(level.materialId);
-        
-        rows.push([
-          level.materialId,
-          this.escapeCsvValue(material?.name || 'Unknown'),
-          this.escapeCsvValue(material?.category || ''),
-          this.escapeCsvValue(material?.subcategory || ''),
-          level.currentQuantity,
-          this.escapeCsvValue(level.location || ''),
-          level.lowStockThreshold || '',
-          level.lastStockCheck || ''
-        ].join(','));
-      }
-      
-      return rows.join('\n');
-    } catch (error) {
-      this.logger.error('Error creating inventory CSV', { error, companyId });
-      throw error;
-    }
-  }
-
-  /**
-   * Escape CSV value
-   * 
-   * @param value - Value to escape
-   * @returns Escaped value
-   */
-  private escapeCsvValue(value: string): string {
-    if (value == null) return '';
-    
-    // If value contains comma, quote, or newline, wrap in quotes
-    if (value.includes(',') || value.includes('"') || value.includes('\n')) {
-      // Double up quotes for escaping
-      return `"${value.replace(/"/g, '""')}"`;
-    }
-    
-    return value;
-  }
-
-  /**
-   * Calculate materials from estimate
-   * 
-   * @param estimate - Estimate data
-   * @param companyId - Company ID
-   * @returns List of materials
-   */
-  private async calculateMaterialsFromEstimate(estimate: any, companyId: string): Promise<any[]> {
-    try {
-      // Connect to MongoDB to get assembly details
-      await this.initMongo();
-      
-      const db = this.mongoClient?.db(config.mongodb.dbName);
-      const assembliesCollection = db?.collection('assemblies');
-      
-      if (!assembliesCollection) {
-        throw new Error('Could not connect to assemblies collection');
-      }
-      
-      // Map to track materials
-      const materialsMap = new Map<string, {
-        materialId: string;
-        quantity: number;
-        wasteFactor: number;
-        adjustedQuantity: number;
-        unitCost: number;
-        totalCost: number;
-        inventoryAllocated: number;
-        purchaseNeeded: number;
-      }>();
-      
-      // Process each room in the estimate
-      for (const room of estimate.rooms || []) {
-        for (const item of room.items || []) {
-          // Get assembly details
-          const assembly = await assembliesCollection.findOne({ _id: item.assemblyId });
+      // Filter rooms based on phase
+      for (const room of estimate.rooms) {
+        for (const item of room.items) {
+          // Get assembly details to determine its phase
+          const assembly = await this.getAssembly(item.assemblyId);
           
-          if (assembly) {
-            // Process materials in the assembly
-            for (const material of assembly.materials || []) {
-              const materialId = material.materialId.toString();
-              const quantity = material.quantity * item.quantity;
-              
-              // If material already exists in map, update quantity
-              if (materialsMap.has(materialId)) {
-                const existing = materialsMap.get(materialId)!;
-                existing.quantity += quantity;
-                existing.adjustedQuantity = Math.ceil(existing.quantity * existing.wasteFactor);
-                existing.totalCost = existing.adjustedQuantity * existing.unitCost;
-              } else {
-                // Get material details for cost
-                const materialDetails = await this.getMaterial(materialId);
-                const unitCost = materialDetails?.currentCost || 0;
-                const wasteFactor = material.wasteFactor || materialDetails?.wasteFactor || 1.1;
-                
-                materialsMap.set(materialId, {
-                  materialId,
-                  quantity,
-                  wasteFactor,
-                  adjustedQuantity: Math.ceil(quantity * wasteFactor),
-                  unitCost,
-                  totalCost: Math.ceil(quantity * wasteFactor) * unitCost,
-                  inventoryAllocated: 0,
-                  purchaseNeeded: Math.ceil(quantity * wasteFactor)
-                });
-              }
-            }
+          if (assembly && assembly.phase === phase) {
+            // Create an inspection item for this assembly
+            items.push({
+              itemId: uuidv4(),
+              category: `${room.name}`,
+              question: `${item.quantity}x ${assembly.name} installed correctly?`,
+              response: null,
+              required: true,
+              estimateItemId: item.id
+            });
           }
         }
       }
-      
-      // Get current inventory levels
-      const inventoryLevels = await this.getInventoryLevels(companyId);
-      const inventoryMap = new Map<string, number>();
-      
-      for (const level of inventoryLevels) {
-        inventoryMap.set(level.materialId, level.currentQuantity);
-      }
-      
-      // Calculate allocation and purchase needs
-      const materials = Array.from(materialsMap.values());
-      
-      for (const material of materials) {
-        const inStock = inventoryMap.get(material.materialId) || 0;
-        material.inventoryAllocated = Math.min(inStock, material.adjustedQuantity);
-        material.purchaseNeeded = Math.max(0, material.adjustedQuantity - material.inventoryAllocated);
-      }
-      
-      return materials;
+
+      return items;
     } catch (error) {
-      this.logger.error('Error calculating materials from estimate', { error });
-      throw error;
+      this.logger.error('Error getting estimate items', { error, projectId, phase });
+      return [];
     }
   }
 
   /**
-   * Get material details from MongoDB
-   * 
-   * @param materialId - Material ID
-   * @returns Material details
-   */
-  private async getMaterial(materialId: string): Promise<any> {
-    try {
-      await this.initMongo();
-      
-      // Query for material
-      const material = await this.materialsCollection.findOne({ _id: materialId });
-      
-      return material;
-    } catch (error) {
-      this.logger.error('Error getting material', { error, materialId });
-      return null;
-    }
-  }
-
-  /**
-   * Get estimate by ID
-   * 
-   * @param estimateId - Estimate ID
-   * @param projectId - Project ID
-   * @returns Estimate or null if not found
-   */
-  private async getEstimate(estimateId: string, projectId: string): Promise<any | null> {
-    try {
-      const result = await this.docClient.send(new GetCommand({
-        TableName: config.dynamodb.tables.estimates,
-        Key: {
-          PK: `PROJECT#${projectId}`,
-          SK: `ESTIMATE#${estimateId}`
-        }
-      }));
-
-      return result.Item;
-    } catch (error) {
-      this.logger.error('Error getting estimate', { error, estimateId, projectId });
-      return null;
-    }
-  }
-
-  /**
-   * Get project by ID
+   * Get project details
    * 
    * @param projectId - Project ID
-   * @returns Project or null if not found
+   * @returns Project details or null if not found
    */
   private async getProject(projectId: string): Promise<any | null> {
     try {
@@ -1245,3 +1145,214 @@ export class InventoryService {
       return null;
     }
   }
+
+  /**
+   * Get inspection template
+   * 
+   * @param companyId - Company ID
+   * @param phase - Project phase
+   * @param templateId - Template ID
+   * @returns Template or null if not found
+   */
+  private async getTemplate(
+    companyId: string,
+    phase: string,
+    templateId: string
+  ): Promise<IInspectionTemplate | null> {
+    try {
+      const result = await this.docClient.send(new GetCommand({
+        TableName: config.dynamodb.tables.inspectionTemplates,
+        Key: {
+          PK: `COMPANY#${companyId}`,
+          SK: `TEMPLATE#${phase}#${templateId}`
+        }
+      }));
+
+      return result.Item as IInspectionTemplate || null;
+    } catch (error) {
+      this.logger.error('Error getting template', { error, companyId, phase, templateId });
+      return null;
+    }
+  }
+
+  /**
+   * Get project estimate
+   * 
+   * @param projectId - Project ID
+   * @returns Latest estimate or null if not found
+   */
+  private async getProjectEstimate(projectId: string): Promise<any | null> {
+    try {
+      const result = await this.docClient.send(new QueryCommand({
+        TableName: config.dynamodb.tables.estimates,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+        ExpressionAttributeValues: {
+          ':pk': `PROJECT#${projectId}`,
+          ':sk': 'ESTIMATE#'
+        },
+        ScanIndexForward: false, // Get newest first
+        Limit: 1
+      }));
+
+      if (!result.Items || result.Items.length === 0) {
+        return null;
+      }
+
+      return result.Items[0];
+    } catch (error) {
+      this.logger.error('Error getting project estimate', { error, projectId });
+      return null;
+    }
+  }
+
+  /**
+   * Get assembly details
+   * 
+   * @param assemblyId - Assembly ID
+   * @returns Assembly details or null if not found
+   */
+  private async getAssembly(assemblyId: string): Promise<any | null> {
+    try {
+      // Connect to MongoDB
+      const mongoClient = new MongoClient(config.mongodb.uri);
+      await mongoClient.connect();
+      
+      const db = mongoClient.db(config.mongodb.dbName);
+      const assembliesCollection = db.collection(config.mongodb.collections.assemblies);
+      
+      // Query for assembly
+      const assembly = await assembliesCollection.findOne({ _id: assemblyId });
+      
+      // Close connection
+      await mongoClient.close();
+      
+      return assembly;
+    } catch (error) {
+      this.logger.error('Error getting assembly', { error, assemblyId });
+      return null;
+    }
+  }
+
+  /**
+   * Notify relevant parties about scheduled inspection
+   * 
+   * @param projectId - Project ID
+   * @param phase - Project phase
+   * @param scheduledDate - Scheduled inspection date
+   * @param inspectionId - Inspection ID
+   */
+  private async notifyInspectionScheduled(
+    projectId: string,
+    phase: string,
+    scheduledDate: string,
+    inspectionId: string
+  ): Promise<void> {
+    try {
+      // Get project details
+      const project = await this.getProject(projectId);
+      if (!project) {
+        this.logger.warn('Cannot send inspection notification - project not found', { projectId });
+        return;
+      }
+
+      // Format date for display
+      const formattedDate = new Date(scheduledDate).toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+
+      // Format phase for display
+      const formattedPhase = phase.charAt(0).toUpperCase() + phase.slice(1);
+
+      // Send email to project manager
+      if (project.manager && project.manager.email) {
+        await this.sendGridService.sendEmail(
+          project.manager.email,
+          `${formattedPhase} Inspection Scheduled - ${project.name}`,
+          `An inspection for the ${formattedPhase} phase of project ${project.name} has been scheduled for ${formattedDate}. 
+          
+You can view and prepare for this inspection at: ${config.frontend.url}/projects/${projectId}/inspections/${inspectionId}`
+        );
+      }
+
+      // Send email to foreman if available
+      if (project.foreman && project.foreman.email) {
+        await this.sendGridService.sendEmail(
+          project.foreman.email,
+          `${formattedPhase} Inspection Scheduled - ${project.name}`,
+          `An inspection for the ${formattedPhase} phase of project ${project.name} has been scheduled for ${formattedDate}.
+          
+Please prepare for this inspection and complete the pre-inspection checklist at: ${config.frontend.url}/projects/${projectId}/inspections/${inspectionId}`
+        );
+      }
+    } catch (error) {
+      this.logger.error('Error sending inspection notification', { error, projectId, phase });
+      // Continue even if notification fails
+    }
+  }
+
+  /**
+   * Notify relevant parties about completed inspection
+   * 
+   * @param projectId - Project ID
+   * @param phase - Project phase
+   * @param inspectionId - Inspection ID
+   * @param status - Inspection status
+   */
+  private async notifyInspectionCompleted(
+    projectId: string,
+    phase: string,
+    inspectionId: string,
+    status: InspectionStatus
+  ): Promise<void> {
+    try {
+      // Get project details
+      const project = await this.getProject(projectId);
+      if (!project) {
+        this.logger.warn('Cannot send inspection completion notification - project not found', { projectId });
+        return;
+      }
+
+      // Format phase for display
+      const formattedPhase = phase.charAt(0).toUpperCase() + phase.slice(1);
+      
+      // Create subject and message based on status
+      const subject = `${formattedPhase} Inspection ${status === InspectionStatus.COMPLETED ? 'Passed' : 'Failed'} - ${project.name}`;
+      const message = `The ${formattedPhase} inspection for project ${project.name} has been ${status === InspectionStatus.COMPLETED ? 'passed' : 'failed'}.
+      
+You can view the inspection results at: ${config.frontend.url}/projects/${projectId}/inspections/${inspectionId}`;
+
+      // Send email to project manager
+      if (project.manager && project.manager.email) {
+        await this.sendGridService.sendEmail(
+          project.manager.email,
+          subject,
+          message
+        );
+      }
+
+      // Send email to foreman if available
+      if (project.foreman && project.foreman.email) {
+        await this.sendGridService.sendEmail(
+          project.foreman.email,
+          subject,
+          message
+        );
+      }
+
+      // Send email to customer if appropriate
+      if (status === InspectionStatus.COMPLETED && project.customer && project.customer.email) {
+        await this.sendGridService.sendEmail(
+          project.customer.email,
+          `${formattedPhase} Stage Inspection Passed - ${project.name}`,
+          `Good news! The ${formattedPhase} inspection for your project has been passed. The project can now move to the next phase.`
+        );
+      }
+    } catch (error) {
+      this.logger.error('Error sending inspection completion notification', { error, projectId, phase });
+      // Continue even if notification fails
+    }
+  }
+}

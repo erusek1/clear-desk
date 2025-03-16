@@ -18,48 +18,52 @@ const logger = new Logger('submit-daily-report');
 const timeTrackingService = new TimeTrackingService(docClient, s3Client);
 
 // Input validation schema
-const WeatherSchema = z.object({
-  conditions: z.string(),
-  temperature: z.number(),
-  impacts: z.string().optional()
-}).optional();
-
-const CrewMemberSchema = z.object({
-  userId: z.string(),
-  hours: z.number().positive()
-});
-
-const IssueSchema = z.object({
-  description: z.string(),
-  severity: z.enum(['low', 'medium', 'high', 'critical']),
-  status: z.enum(['open', 'in-progress', 'resolved']),
-  assignedTo: z.string().optional()
-}).optional();
-
-const MaterialRequestSchema = z.object({
-  materialId: z.string(),
-  quantity: z.number().positive(),
-  urgency: z.enum(['low', 'medium', 'high']),
-  notes: z.string().optional()
-}).optional();
-
-const ExtraWorkSchema = z.object({
-  description: z.string(),
-  authorizedBy: z.string().optional(),
-  estimatedHours: z.number().optional(),
-  estimatedMaterials: z.number().optional()
-}).optional();
-
 const RequestSchema = z.object({
   projectId: z.string().uuid(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), // YYYY-MM-DD format
-  weather: WeatherSchema,
-  crew: z.array(CrewMemberSchema),
+  weather: z.object({
+    conditions: z.string(),
+    temperature: z.number(),
+    impacts: z.string().optional()
+  }).optional(),
+  crew: z.array(
+    z.object({
+      userId: z.string().uuid(),
+      hours: z.number().positive()
+    })
+  ),
   workCompleted: z.string(),
   workPlanned: z.string().optional(),
-  issues: z.array(IssueSchema).optional(),
-  materialRequests: z.array(MaterialRequestSchema).optional(),
-  extraWork: z.array(ExtraWorkSchema).optional()
+  issues: z.array(
+    z.object({
+      description: z.string(),
+      severity: z.enum(['low', 'medium', 'high', 'critical']),
+      status: z.enum(['open', 'in-progress', 'resolved']),
+      assignedTo: z.string().uuid().optional()
+    })
+  ).optional(),
+  materialRequests: z.array(
+    z.object({
+      materialId: z.string(),
+      quantity: z.number().positive(),
+      urgency: z.enum(['low', 'medium', 'high']),
+      notes: z.string().optional()
+    })
+  ).optional(),
+  extraWork: z.array(
+    z.object({
+      description: z.string(),
+      authorizedBy: z.string().optional(),
+      estimatedHours: z.number().optional(),
+      estimatedMaterials: z.number().optional()
+    })
+  ).optional(),
+  photos: z.array(
+    z.object({
+      s3Key: z.string(),
+      caption: z.string().optional()
+    })
+  ).optional()
 });
 
 type RequestType = z.infer<typeof RequestSchema>;
@@ -95,21 +99,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     logger.info('Submitting daily report', { 
       projectId: requestData.projectId,
       date: requestData.date,
+      crewCount: requestData.crew.length,
       userId: user.id
     });
 
-    // 4. Check for existing report
-    const existingReport = await timeTrackingService.getDailyReport(
-      requestData.projectId,
-      requestData.date
-    );
-
-    if (existingReport) {
-      return errorResponse(409, { 
-        message: 'Daily report already exists for this date',
-        reportId: existingReport.reportId
-      });
-    }
+    // 4. Format photos with upload time
+    const formattedPhotos = requestData.photos?.map(photo => ({
+      s3Key: photo.s3Key,
+      caption: photo.caption,
+      uploadTime: new Date().toISOString()
+    }));
 
     // 5. Submit daily report
     const report = await timeTrackingService.submitDailyReport({
@@ -119,10 +118,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       crew: requestData.crew,
       workCompleted: requestData.workCompleted,
       workPlanned: requestData.workPlanned,
-      issues: requestData.issues || [],
-      materialRequests: requestData.materialRequests || [],
-      extraWork: requestData.extraWork || [],
-      photos: [],  // Initialize with empty photos array
+      issues: requestData.issues,
+      materialRequests: requestData.materialRequests,
+      extraWork: requestData.extraWork,
+      photos: formattedPhotos,
       createdBy: user.id,
       updatedBy: user.id
     });
@@ -130,8 +129,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // 6. Return successful response
     return successResponse(201, { 
       message: 'Daily report submitted successfully',
-      reportId: report.reportId,
-      date: report.date
+      data: {
+        reportId: report.reportId,
+        projectId: report.projectId,
+        date: report.date,
+        crewCount: report.crew.length,
+        totalHours: report.crew.reduce((sum, member) => sum + member.hours, 0)
+      }
     });
   } catch (error) {
     // 7. Handle and log errors
@@ -143,6 +147,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         return errorResponse(404, { message: 'Project not found' });
       } else if (error.name === 'ValidationError') {
         return errorResponse(400, { message: error.message });
+      } else if (error.name === 'DuplicateResourceError') {
+        return errorResponse(409, { message: 'Daily report already exists for this date' });
       } else if (error.name === 'AccessDeniedException') {
         return errorResponse(403, { message: 'Access denied' });
       }
