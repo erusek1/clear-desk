@@ -465,7 +465,7 @@ export const InspectionChecklist: React.FC<IInspectionChecklistProps> = ({
                   !isChecklistComplete || 
                   completeInspectionMutation.isLoading
                 }
-                aria-label="Fail inspection"
+                aria-busy={completeInspectionMutation.isLoading}
               >
                 Fail Inspection
               </Button>
@@ -478,7 +478,6 @@ export const InspectionChecklist: React.FC<IInspectionChecklistProps> = ({
                   completeInspectionMutation.isLoading
                 }
                 aria-busy={completeInspectionMutation.isLoading}
-                aria-label="Pass inspection"
               >
                 {completeInspectionMutation.isLoading ? (
                   <>
