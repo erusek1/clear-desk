@@ -1,1209 +1,84 @@
 // backend/src/services/vehicle-inventory.service.ts
 
-import { DynamoDBDocumentClient, QueryCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
-import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
-import { MongoClient } from 'mongodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { S3Client } from '@aws-sdk/client-s3';
 import { v4 as uuidv4 } from 'uuid';
 import { Logger } from '../utils/logger';
 import config from '../config';
-import { TransactionType } from '../types/inventory.types';
-import { 
-  IVehicle, 
-  IVehicleInventoryLevel, 
-  IVehicleInventoryTransaction, 
-  IVehicleInventoryCheck,
-  IVehicleInventoryTemplate,
-  VehicleStatus
-} from '../types/vehicle.types';
-import Papa from 'papaparse';
+
+// Type definitions
+interface VehicleItem {
+  id: string;
+  vehicleId: string;
+  materialId: string;
+  materialName: string;
+  quantity: number;
+  minQuantity?: number;
+  created: string;
+  updated: string;
+  createdBy: string;
+  updatedBy: string;
+}
+
+interface Vehicle {
+  id: string;
+  companyId: string;
+  name: string;
+  type: string;
+  licensePlate?: string;
+  vin?: string;
+  model?: string;
+  year?: number;
+  created: string;
+  updated: string;
+  createdBy: string;
+  updatedBy: string;
+}
+
+interface TransferResult {
+  sourceId: string;
+  targetId: string;
+  materialId: string;
+  quantity: number;
+  sourceInventory: VehicleItem | null;
+  targetInventory: VehicleItem | null;
+}
 
 /**
- * Vehicle inventory service
+ * Service for managing vehicle inventory
  */
 export class VehicleInventoryService {
   private logger: Logger;
-  private mongoClient: MongoClient | null = null;
-  private materialsCollection: any = null;
 
   constructor(
     private docClient: DynamoDBDocumentClient,
     private s3Client: S3Client
   ) {
     this.logger = new Logger('VehicleInventoryService');
-    this.initMongo();
-  }
-
-  /**
-   * Get vehicle inventory level
-   * 
-   * @param vehicleId - Vehicle ID
-   * @param materialId - Material ID
-   * @returns Inventory level or null if not found
-   */
-  async getVehicleInventoryLevel(vehicleId: string, materialId: string): Promise<IVehicleInventoryLevel | null> {
-    try {
-      const result = await this.docClient.send(new GetCommand({
-        TableName: config.dynamodb.tables.vehicleInventory,
-        Key: {
-          PK: `VEHICLE#${vehicleId}`,
-          SK: `INVENTORY#${materialId}`
-        }
-      }));
-
-      if (!result.Item) {
-        return null;
-      }
-
-      return result.Item as IVehicleInventoryLevel;
-    } catch (error) {
-      this.logger.error('Error getting vehicle inventory level', { error, vehicleId, materialId });
-      throw error;
-    }
-  }
-
-  /**
-   * Get all inventory levels for a vehicle
-   * 
-   * @param vehicleId - Vehicle ID
-   * @returns List of inventory levels
-   */
-  async getVehicleInventory(vehicleId: string): Promise<IVehicleInventoryLevel[]> {
-    try {
-      const result = await this.docClient.send(new QueryCommand({
-        TableName: config.dynamodb.tables.vehicleInventory,
-        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-        ExpressionAttributeValues: {
-          ':pk': `VEHICLE#${vehicleId}`,
-          ':sk': 'INVENTORY#'
-        }
-      }));
-
-      return (result.Items || []) as IVehicleInventoryLevel[];
-    } catch (error) {
-      this.logger.error('Error getting vehicle inventory', { error, vehicleId });
-      throw error;
-    }
-  }
-
-  /**
-   * Record a vehicle inventory transaction
-   * 
-   * @param transaction - Transaction data without ID
-   * @returns Created transaction
-   */
-  async recordVehicleTransaction(
-    transaction: Omit<IVehicleInventoryTransaction, 'transactionId' | 'created'>
-  ): Promise<IVehicleInventoryTransaction> {
-    try {
-      const transactionId = uuidv4();
-      const now = new Date().toISOString();
-      
-      // Create transaction record
-      const newTransaction: IVehicleInventoryTransaction = {
-        transactionId,
-        ...transaction,
-        created: now
-      };
-
-      // Save transaction to DynamoDB
-      await this.docClient.send(new PutCommand({
-        TableName: config.dynamodb.tables.vehicleInventoryTransactions,
-        Item: {
-          PK: `VEHICLE#${transaction.vehicleId}`,
-          SK: `TRANSACTION#${now}`,
-          GSI1PK: `MATERIAL#${transaction.materialId}`,
-          GSI1SK: `TRANSACTION#${now}`,
-          ...newTransaction
-        }
-      }));
-
-      // Update inventory level based on transaction type
-      let quantityChange = 0;
-      switch (transaction.type) {
-        case TransactionType.PURCHASE:
-        case TransactionType.RETURN:
-          quantityChange = transaction.quantity;
-          break;
-        case TransactionType.ALLOCATION:
-          quantityChange = -transaction.quantity;
-          break;
-        case TransactionType.ADJUSTMENT:
-          quantityChange = transaction.quantity; // Quantity is the adjustment amount (positive or negative)
-          break;
-        case TransactionType.TRANSFER:
-          if (transaction.sourceId) {
-            // This is a transfer from warehouse/other vehicle to this vehicle
-            quantityChange = transaction.quantity;
-          } else {
-            // This is a transfer from this vehicle to warehouse/other vehicle
-            quantityChange = -transaction.quantity;
-          }
-          break;
-        default:
-          break;
-      }
-
-      if (quantityChange !== 0) {
-        // Get current inventory level
-        const currentLevel = await this.getVehicleInventoryLevel(transaction.vehicleId, transaction.materialId);
-        const currentQuantity = currentLevel?.currentQuantity || 0;
-        
-        // Update inventory level
-        await this.updateVehicleInventoryLevel(
-          transaction.vehicleId,
-          transaction.materialId,
-          currentQuantity + quantityChange,
-          transaction.createdBy,
-          currentLevel?.minQuantity,
-          currentLevel?.standardQuantity,
-          currentLevel?.location
-        );
-      }
-
-      return newTransaction;
-    } catch (error) {
-      this.logger.error('Error recording vehicle transaction', { error, transaction });
-      throw error;
-    }
-  }
-
-  /**
-   * Transfer materials between warehouse and vehicle
-   * 
-   * @param fromWarehouse - Whether transfer is from warehouse to vehicle
-   * @param vehicleId - Vehicle ID
-   * @param materialId - Material ID
-   * @param quantity - Quantity to transfer
-   * @param userId - User ID making the transfer
-   * @param companyId - Company ID (for warehouse inventory)
-   * @returns Transaction ID
-   */
-  async transferMaterials(
-    fromWarehouse: boolean,
-    vehicleId: string,
-    materialId: string,
-    quantity: number,
-    userId: string,
-    companyId: string
-  ): Promise<string> {
-    try {
-      // Create transaction record
-      const transaction: Omit<IVehicleInventoryTransaction, 'transactionId' | 'created'> = {
-        vehicleId,
-        materialId,
-        type: TransactionType.TRANSFER,
-        quantity,
-        sourceId: fromWarehouse ? 'WAREHOUSE' : undefined,
-        createdBy: userId
-      };
-
-      // Record vehicle transaction
-      const vehicleTransaction = await this.recordVehicleTransaction(transaction);
-
-      // If we're transferring from warehouse, we need to update the warehouse inventory
-      if (fromWarehouse) {
-        // Get InventoryService instance to update warehouse inventory
-        const InventoryService = require('./inventory.service').InventoryService;
-        const inventoryService = new InventoryService(this.docClient, this.s3Client);
-        
-        // Record warehouse transaction
-        await inventoryService.recordTransaction({
-          companyId,
-          materialId,
-          type: TransactionType.ALLOCATION,
-          quantity,
-          notes: `Transfer to vehicle ${vehicleId}`,
-          createdBy: userId
-        });
-      } else {
-        // Transferring to warehouse, update warehouse inventory
-        const InventoryService = require('./inventory.service').InventoryService;
-        const inventoryService = new InventoryService(this.docClient, this.s3Client);
-        
-        // Record warehouse transaction
-        await inventoryService.recordTransaction({
-          companyId,
-          materialId,
-          type: TransactionType.RETURN,
-          quantity,
-          notes: `Transfer from vehicle ${vehicleId}`,
-          createdBy: userId
-        });
-      }
-
-      return vehicleTransaction.transactionId;
-    } catch (error) {
-      this.logger.error('Error transferring materials', { 
-        error, fromWarehouse, vehicleId, materialId 
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Transfer materials between vehicles
-   * 
-   * @param fromVehicleId - Source vehicle ID
-   * @param toVehicleId - Destination vehicle ID
-   * @param materialId - Material ID
-   * @param quantity - Quantity to transfer
-   * @param userId - User ID making the transfer
-   * @returns Array of transaction IDs [fromTransaction, toTransaction]
-   */
-  async transferBetweenVehicles(
-    fromVehicleId: string,
-    toVehicleId: string,
-    materialId: string,
-    quantity: number,
-    userId: string
-  ): Promise<string[]> {
-    try {
-      // Create transaction for source vehicle
-      const fromTransaction: Omit<IVehicleInventoryTransaction, 'transactionId' | 'created'> = {
-        vehicleId: fromVehicleId,
-        materialId,
-        type: TransactionType.TRANSFER,
-        quantity,
-        sourceId: toVehicleId, // Destination is the source of the transaction (to identify as outgoing)
-        createdBy: userId
-      };
-
-      // Record source transaction
-      const sourceTransaction = await this.recordVehicleTransaction(fromTransaction);
-
-      // Create transaction for destination vehicle
-      const toTransaction: Omit<IVehicleInventoryTransaction, 'transactionId' | 'created'> = {
-        vehicleId: toVehicleId,
-        materialId,
-        type: TransactionType.TRANSFER,
-        quantity,
-        sourceId: fromVehicleId, // Source is the source of the material
-        createdBy: userId
-      };
-
-      // Record destination transaction
-      const destTransaction = await this.recordVehicleTransaction(toTransaction);
-
-      return [sourceTransaction.transactionId, destTransaction.transactionId];
-    } catch (error) {
-      this.logger.error('Error transferring between vehicles', { 
-        error, fromVehicleId, toVehicleId, materialId 
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Create a vehicle inventory check
-   * 
-   * @param vehicleId - Vehicle ID
-   * @param userId - User ID performing the check
-   * @returns Created inventory check
-   */
-  async createInventoryCheck(vehicleId: string, userId: string): Promise<IVehicleInventoryCheck> {
-    try {
-      const checkId = uuidv4();
-      const now = new Date().toISOString();
-      
-      // Get current inventory
-      const inventory = await this.getVehicleInventory(vehicleId);
-      
-      // Create check items
-      const items = inventory.map(item => ({
-        materialId: item.materialId,
-        expectedQuantity: item.currentQuantity,
-        actualQuantity: 0, // Will be filled in during the check
-        notes: ''
-      }));
-      
-      // Create check record
-      const check: IVehicleInventoryCheck = {
-        checkId,
-        vehicleId,
-        date: now,
-        performedBy: userId,
-        items,
-        completed: false,
-        created: now,
-        updated: now,
-        createdBy: userId,
-        updatedBy: userId
-      };
-
-      // Save check to DynamoDB
-      await this.docClient.send(new PutCommand({
-        TableName: config.dynamodb.tables.vehicleInventoryChecks,
-        Item: {
-          PK: `VEHICLE#${vehicleId}`,
-          SK: `CHECK#${checkId}`,
-          GSI1PK: `CHECK#${checkId}`,
-          GSI1SK: `VEHICLE#${vehicleId}`,
-          ...check
-        }
-      }));
-
-      return check;
-    } catch (error) {
-      this.logger.error('Error creating inventory check', { error, vehicleId });
-      throw error;
-    }
-  }
-
-  /**
-   * Update inventory check item
-   * 
-   * @param checkId - Check ID
-   * @param vehicleId - Vehicle ID
-   * @param materialId - Material ID
-   * @param actualQuantity - Actual quantity
-   * @param notes - Optional notes
-   * @param userId - User ID making the update
-   * @returns Updated inventory check
-   */
-  async updateInventoryCheckItem(
-    checkId: string,
-    vehicleId: string,
-    materialId: string,
-    actualQuantity: number,
-    notes: string | undefined,
-    userId: string
-  ): Promise<IVehicleInventoryCheck | null> {
-    try {
-      // Get existing check
-      const check = await this.getInventoryCheck(checkId, vehicleId);
-      if (!check) {
-        throw new Error('Inventory check not found');
-      }
-
-      // Find and update the item
-      const itemIndex = check.items.findIndex(item => item.materialId === materialId);
-      if (itemIndex === -1) {
-        throw new Error('Material not found in inventory check');
-      }
-
-      // Update check items
-      const updatedItems = [...check.items];
-      updatedItems[itemIndex] = {
-        ...updatedItems[itemIndex],
-        actualQuantity,
-        notes: notes || updatedItems[itemIndex].notes
-      };
-
-      // Update the check in DynamoDB
-      const result = await this.docClient.send(new UpdateCommand({
-        TableName: config.dynamodb.tables.vehicleInventoryChecks,
-        Key: {
-          PK: `VEHICLE#${vehicleId}`,
-          SK: `CHECK#${checkId}`
-        },
-        UpdateExpression: 'set items = :items, updated = :updated, updatedBy = :updatedBy',
-        ExpressionAttributeValues: {
-          ':items': updatedItems,
-          ':updated': new Date().toISOString(),
-          ':updatedBy': userId
-        },
-        ReturnValues: 'ALL_NEW'
-      }));
-
-      if (!result.Attributes) {
-        return null;
-      }
-
-      return result.Attributes as IVehicleInventoryCheck;
-    } catch (error) {
-      this.logger.error('Error updating inventory check item', { 
-        error, checkId, vehicleId, materialId 
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Complete inventory check
-   * 
-   * @param checkId - Check ID
-   * @param vehicleId - Vehicle ID
-   * @param updateInventory - Whether to update inventory levels
-   * @param userId - User ID completing the check
-   * @returns Completed inventory check
-   */
-  async completeInventoryCheck(
-    checkId: string,
-    vehicleId: string,
-    updateInventory: boolean,
-    userId: string
-  ): Promise<IVehicleInventoryCheck | null> {
-    try {
-      // Get existing check
-      const check = await this.getInventoryCheck(checkId, vehicleId);
-      if (!check) {
-        throw new Error('Inventory check not found');
-      }
-
-      // Calculate variances
-      const variance = {
-        missing: [] as { materialId: string; quantity: number }[],
-        extra: [] as { materialId: string; quantity: number }[]
-      };
-
-      for (const item of check.items) {
-        const diff = item.actualQuantity - item.expectedQuantity;
-        if (diff < 0) {
-          variance.missing.push({
-            materialId: item.materialId,
-            quantity: Math.abs(diff)
-          });
-        } else if (diff > 0) {
-          variance.extra.push({
-            materialId: item.materialId,
-            quantity: diff
-          });
-        }
-      }
-
-      // Update inventory levels if requested
-      if (updateInventory) {
-        for (const item of check.items) {
-          await this.updateVehicleInventoryLevel(
-            vehicleId,
-            item.materialId,
-            item.actualQuantity,
-            userId
-          );
-        }
-      }
-
-      // Update the check in DynamoDB
-      const result = await this.docClient.send(new UpdateCommand({
-        TableName: config.dynamodb.tables.vehicleInventoryChecks,
-        Key: {
-          PK: `VEHICLE#${vehicleId}`,
-          SK: `CHECK#${checkId}`
-        },
-        UpdateExpression: 'set completed = :completed, variance = :variance, updated = :updated, updatedBy = :updatedBy',
-        ExpressionAttributeValues: {
-          ':completed': true,
-          ':variance': variance,
-          ':updated': new Date().toISOString(),
-          ':updatedBy': userId
-        },
-        ReturnValues: 'ALL_NEW'
-      }));
-
-      if (!result.Attributes) {
-        return null;
-      }
-
-      // Update last stock check date for vehicle inventory
-      for (const item of check.items) {
-        // Get current inventory level
-        const level = await this.getVehicleInventoryLevel(vehicleId, item.materialId);
-        if (level) {
-          // Update last stock check date
-          await this.docClient.send(new UpdateCommand({
-            TableName: config.dynamodb.tables.vehicleInventory,
-            Key: {
-              PK: `VEHICLE#${vehicleId}`,
-              SK: `INVENTORY#${item.materialId}`
-            },
-            UpdateExpression: 'set lastStockCheck = :date, updated = :updated, updatedBy = :updatedBy',
-            ExpressionAttributeValues: {
-              ':date': new Date().toISOString(),
-              ':updated': new Date().toISOString(),
-              ':updatedBy': userId
-            }
-          }));
-        }
-      }
-
-      return result.Attributes as IVehicleInventoryCheck;
-    } catch (error) {
-      this.logger.error('Error completing inventory check', { error, checkId, vehicleId });
-      throw error;
-    }
-  }
-
-  /**
-   * Get inventory check
-   * 
-   * @param checkId - Check ID
-   * @param vehicleId - Vehicle ID
-   * @returns Inventory check or null if not found
-   */
-  async getInventoryCheck(checkId: string, vehicleId: string): Promise<IVehicleInventoryCheck | null> {
-    try {
-      const result = await this.docClient.send(new GetCommand({
-        TableName: config.dynamodb.tables.vehicleInventoryChecks,
-        Key: {
-          PK: `VEHICLE#${vehicleId}`,
-          SK: `CHECK#${checkId}`
-        }
-      }));
-
-      if (!result.Item) {
-        return null;
-      }
-
-      return result.Item as IVehicleInventoryCheck;
-    } catch (error) {
-      this.logger.error('Error getting inventory check', { error, checkId, vehicleId });
-      throw error;
-    }
-  }
-
-  /**
-   * Get recent inventory checks for a vehicle
-   * 
-   * @param vehicleId - Vehicle ID
-   * @param limit - Optional result limit
-   * @returns List of inventory checks
-   */
-  async getRecentInventoryChecks(vehicleId: string, limit?: number): Promise<IVehicleInventoryCheck[]> {
-    try {
-      const result = await this.docClient.send(new QueryCommand({
-        TableName: config.dynamodb.tables.vehicleInventoryChecks,
-        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-        ExpressionAttributeValues: {
-          ':pk': `VEHICLE#${vehicleId}`,
-          ':sk': 'CHECK#'
-        },
-        ScanIndexForward: false, // Get newest first
-        Limit: limit
-      }));
-
-      return (result.Items || []) as IVehicleInventoryCheck[];
-    } catch (error) {
-      this.logger.error('Error getting recent inventory checks', { error, vehicleId });
-      throw error;
-    }
-  }
-
-  /**
-   * Create inventory template
-   * 
-   * @param template - Template data without ID
-   * @returns Created template
-   */
-  async createInventoryTemplate(
-    template: Omit<IVehicleInventoryTemplate, 'templateId' | 'created' | 'updated'>
-  ): Promise<IVehicleInventoryTemplate> {
-    try {
-      const templateId = uuidv4();
-      const now = new Date().toISOString();
-      
-      // Create template record
-      const newTemplate: IVehicleInventoryTemplate = {
-        templateId,
-        ...template,
-        created: now,
-        updated: now
-      };
-
-      // Save template to DynamoDB
-      await this.docClient.send(new PutCommand({
-        TableName: config.dynamodb.tables.vehicleInventoryTemplates,
-        Item: {
-          PK: `COMPANY#${template.companyId}`,
-          SK: `TEMPLATE#${templateId}`,
-          GSI1PK: `TEMPLATE#${template.name}`,
-          GSI1SK: `COMPANY#${template.companyId}`,
-          ...newTemplate
-        }
-      }));
-
-      return newTemplate;
-    } catch (error) {
-      this.logger.error('Error creating inventory template', { error, template });
-      throw error;
-    }
-  }
-
-  /**
-   * Get inventory template
-   * 
-   * @param templateId - Template ID
-   * @param companyId - Company ID
-   * @returns Template or null if not found
-   */
-  async getInventoryTemplate(templateId: string, companyId: string): Promise<IVehicleInventoryTemplate | null> {
-    try {
-      const result = await this.docClient.send(new GetCommand({
-        TableName: config.dynamodb.tables.vehicleInventoryTemplates,
-        Key: {
-          PK: `COMPANY#${companyId}`,
-          SK: `TEMPLATE#${templateId}`
-        }
-      }));
-
-      if (!result.Item) {
-        return null;
-      }
-
-      return result.Item as IVehicleInventoryTemplate;
-    } catch (error) {
-      this.logger.error('Error getting inventory template', { error, templateId, companyId });
-      throw error;
-    }
-  }
-
-  /**
-   * Get all inventory templates for a company
-   * 
-   * @param companyId - Company ID
-   * @returns List of templates
-   */
-  async getInventoryTemplates(companyId: string): Promise<IVehicleInventoryTemplate[]> {
-    try {
-      const result = await this.docClient.send(new QueryCommand({
-        TableName: config.dynamodb.tables.vehicleInventoryTemplates,
-        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-        ExpressionAttributeValues: {
-          ':pk': `COMPANY#${companyId}`,
-          ':sk': 'TEMPLATE#'
-        }
-      }));
-
-      return (result.Items || []) as IVehicleInventoryTemplate[];
-    } catch (error) {
-      this.logger.error('Error getting inventory templates', { error, companyId });
-      throw error;
-    }
-  }
-
-  /**
-   * Apply inventory template to vehicle
-   * 
-   * @param vehicleId - Vehicle ID
-   * @param templateId - Template ID
-   * @param companyId - Company ID
-   * @param userId - User ID applying the template
-   * @returns Number of items updated
-   */
-  async applyInventoryTemplate(
-    vehicleId: string,
-    templateId: string,
-    companyId: string,
-    userId: string
-  ): Promise<number> {
-    try {
-      // Get template
-      const template = await this.getInventoryTemplate(templateId, companyId);
-      if (!template) {
-        throw new Error('Template not found');
-      }
-
-      // Apply each item in the template
-      let updateCount = 0;
-      for (const item of template.items) {
-        await this.updateVehicleInventoryLevel(
-          vehicleId,
-          item.materialId,
-          item.standardQuantity, // Set current quantity to standard
-          userId,
-          item.minQuantity,
-          item.standardQuantity,
-          item.location
-        );
-        updateCount++;
-      }
-
-      return updateCount;
-    } catch (error) {
-      this.logger.error('Error applying inventory template', { error, vehicleId, templateId });
-      throw error;
-    }
-  }
-
-  /**
-   * Import vehicle inventory from CSV
-   * 
-   * @param vehicleId - Vehicle ID
-   * @param fileKey - S3 file key for the CSV
-   * @param userId - User ID performing the import
-   * @returns Import result
-   */
-  async importVehicleInventoryFromCsv(
-    vehicleId: string,
-    fileKey: string,
-    userId: string
-  ): Promise<{ totalRows: number; successRows: number; failedRows: number }> {
-    try {
-      // Get CSV file from S3
-      const fileData = await this.getFileFromS3(fileKey);
-      
-      // Parse CSV
-      const parsedData = await this.parseCSV(fileData);
-      
-      let totalRows = 0;
-      let successRows = 0;
-      let failedRows = 0;
-
-      // Process each row
-      for (const row of parsedData.data) {
-        totalRows++;
-        try {
-          // Validate row
-          if (!row.materialId) {
-            throw new Error('Material ID is required');
-          }
-          
-          if (row.quantity === undefined || row.quantity === null) {
-            throw new Error('Quantity is required');
-          }
-
-          // Update inventory level
-          await this.updateVehicleInventoryLevel(
-            vehicleId,
-            row.materialId,
-            parseFloat(row.quantity),
-            userId,
-            row.minQuantity ? parseFloat(row.minQuantity) : undefined,
-            row.standardQuantity ? parseFloat(row.standardQuantity) : undefined,
-            row.location
-          );
-
-          successRows++;
-        } catch (error) {
-          failedRows++;
-          this.logger.error('Error processing CSV row', { 
-            error, vehicleId, row, rowIndex: totalRows 
-          });
-        }
-      }
-
-      return { totalRows, successRows, failedRows };
-    } catch (error) {
-      this.logger.error('Error importing vehicle inventory from CSV', { error, vehicleId, fileKey });
-      throw error;
-    }
-  }
-
-  /**
-   * Export vehicle inventory to CSV
-   * 
-   * @param vehicleId - Vehicle ID
-   * @returns S3 file key for the generated CSV
-   */
-  async exportVehicleInventoryToCsv(vehicleId: string): Promise<string> {
-    try {
-      // Get vehicle details
-      const vehicle = await this.getVehicle(vehicleId);
-      if (!vehicle) {
-        throw new Error('Vehicle not found');
-      }
-
-      // Get all inventory levels
-      const inventory = await this.getVehicleInventory(vehicleId);
-      
-      // Create CSV data
-      const csvData = await this.createInventoryCsv(inventory, vehicle);
-      
-      // Upload to S3
-      const fileKey = `exports/vehicles/${vehicleId}/inventory-${new Date().toISOString()}.csv`;
-      await this.uploadToS3(fileKey, csvData, 'text/csv');
-      
-      return fileKey;
-    } catch (error) {
-      this.logger.error('Error exporting vehicle inventory to CSV', { error, vehicleId });
-      throw error;
-    }
-  }
-
-  /**
-   * Get low stock items for a vehicle
-   * 
-   * @param vehicleId - Vehicle ID
-   * @returns List of low stock items
-   */
-  async getVehicleLowStockItems(vehicleId: string): Promise<{
-    materialId: string;
-    name: string;
-    currentQuantity: number;
-    minQuantity: number;
-    standardQuantity: number;
-    deficit: number;
-  }[]> {
-    try {
-      // Get all inventory levels
-      const inventory = await this.getVehicleInventory(vehicleId);
-      
-      // Filter for low stock items
-      const lowStockItems = [];
-      
-      for (const item of inventory) {
-        if (
-          item.minQuantity !== undefined && 
-          item.currentQuantity < item.minQuantity
-        ) {
-          // Get material name from MongoDB
-          const material = await this.getMaterial(item.materialId);
-          
-          lowStockItems.push({
-            materialId: item.materialId,
-            name: material?.name || 'Unknown Material',
-            currentQuantity: item.currentQuantity,
-            minQuantity: item.minQuantity,
-            standardQuantity: item.standardQuantity || item.minQuantity,
-            deficit: item.minQuantity - item.currentQuantity
-          });
-        }
-      }
-      
-      // Sort by deficit (highest first)
-      return lowStockItems.sort((a, b) => b.deficit - a.deficit);
-    } catch (error) {
-      this.logger.error('Error getting vehicle low stock items', { error, vehicleId });
-      throw error;
-    }
-  }
-
-  /**
-   * Get file from S3
-   * 
-   * @param fileKey - S3 file key
-   * @returns File data as string
-   */
-  private async getFileFromS3(fileKey: string): Promise<string> {
-    try {
-      const result = await this.s3Client.send(new GetObjectCommand({
-        Bucket: config.s3.buckets.files,
-        Key: fileKey
-      }));
-
-      const streamToString = (stream: any): Promise<string> => {
-        return new Promise((resolve, reject) => {
-          const chunks: any[] = [];
-          stream.on('data', (chunk: any) => chunks.push(chunk));
-          stream.on('error', reject);
-          stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
-        });
-      };
-
-      if (!result.Body) {
-        throw new Error('Empty file');
-      }
-
-      return streamToString(result.Body);
-    } catch (error) {
-      this.logger.error('Error getting file from S3', { error, fileKey });
-      throw error;
-    }
-  }
-
-  /**
-   * Upload file to S3
-   * 
-   * @param fileKey - S3 file key
-   * @param data - File data
-   * @param contentType - Content type
-   * @returns S3 file key
-   */
-  private async uploadToS3(fileKey: string, data: string, contentType: string): Promise<string> {
-    try {
-      await this.s3Client.send(new PutObjectCommand({
-        Bucket: config.s3.buckets.files,
-        Key: fileKey,
-        Body: data,
-        ContentType: contentType
-      }));
-
-      return fileKey;
-    } catch (error) {
-      this.logger.error('Error uploading to S3', { error, fileKey });
-      throw error;
-    }
-  }
-
-  /**
-   * Parse CSV data
-   * 
-   * @param csvData - CSV data as string
-   * @returns Parsed CSV data
-   */
-  private parseCSV(csvData: string): Promise<Papa.ParseResult<any>> {
-    return new Promise((resolve, reject) => {
-      Papa.parse(csvData, {
-        header: true,
-        skipEmptyLines: true,
-        dynamicTyping: true,
-        complete: (results) => {
-          resolve(results);
-        },
-        error: (error) => {
-          reject(error);
-        }
-      });
-    });
-  }
-
-  /**
-   * Create CSV data from inventory levels
-   * 
-   * @param inventory - Vehicle inventory levels
-   * @param vehicle - Vehicle details
-   * @returns CSV data as string
-   */
-  private async createInventoryCsv(inventory: IVehicleInventoryLevel[], vehicle: IVehicle): Promise<string> {
-    try {
-      const rows = [];
-      
-      // Add header row
-      rows.push([
-        'materialId',
-        'name',
-        'category',
-        'currentQuantity',
-        'minQuantity',
-        'standardQuantity',
-        'location',
-        'lastStockCheck'
-      ].join(','));
-      
-      // Add data rows
-      for (const item of inventory) {
-        // Get material details from MongoDB
-        const material = await this.getMaterial(item.materialId);
-        
-        rows.push([
-          item.materialId,
-          this.escapeCsvValue(material?.name || 'Unknown'),
-          this.escapeCsvValue(material?.category || ''),
-          item.currentQuantity,
-          item.minQuantity || '',
-          item.standardQuantity || '',
-          this.escapeCsvValue(item.location || ''),
-          item.lastStockCheck || ''
-        ].join(','));
-      }
-      
-      return rows.join('\n');
-    } catch (error) {
-      this.logger.error('Error creating inventory CSV', { error, vehicleId: vehicle.vehicleId });
-      throw error;
-    }
-  }
-
-  /**
-   * Escape CSV value
-   * 
-   * @param value - Value to escape
-   * @returns Escaped value
-   */
-  private escapeCsvValue(value: string): string {
-    if (value == null) return '';
-    
-    // If value contains comma, quote, or newline, wrap in quotes
-    if (value.includes(',') || value.includes('"') || value.includes('\n')) {
-      // Double up quotes for escaping
-      return `"${value.replace(/"/g, '""')}"`;
-    }
-    
-    return value;
-  }
-
-  /**
-   * Get material details from MongoDB
-   * 
-   * @param materialId - Material ID
-   * @returns Material details
-   */
-  private async getMaterial(materialId: string): Promise<any> {
-    try {
-      await this.initMongo();
-      
-      // Query for material
-      const material = await this.materialsCollection.findOne({ _id: materialId });
-      
-      return material;
-    } catch (error) {
-      this.logger.error('Error getting material', { error, materialId });
-      return null;
-    }
-  }
-}
-
-  /**
-   * Initialize MongoDB connection
-   */
-  private async initMongo(): Promise<void> {
-    try {
-      if (!this.mongoClient) {
-        this.mongoClient = new MongoClient(config.mongodb.uri);
-        await this.mongoClient.connect();
-        
-        const db = this.mongoClient.db(config.mongodb.dbName);
-        this.materialsCollection = db.collection(config.mongodb.collections.materials);
-        
-        this.logger.info('MongoDB connection established');
-      }
-    } catch (error) {
-      this.logger.error('Error connecting to MongoDB', { error });
-      throw error;
-    }
-  }
-
-  /**
-   * Create a new vehicle
-   * 
-   * @param vehicle - Vehicle data without ID
-   * @returns Created vehicle
-   */
-  async createVehicle(
-    vehicle: Omit<IVehicle, 'vehicleId' | 'created' | 'updated'>
-  ): Promise<IVehicle> {
-    try {
-      const vehicleId = uuidv4();
-      const now = new Date().toISOString();
-      
-      // Create vehicle record
-      const newVehicle: IVehicle = {
-        vehicleId,
-        ...vehicle,
-        created: now,
-        updated: now
-      };
-
-      // Save vehicle to DynamoDB
-      await this.docClient.send(new PutCommand({
-        TableName: config.dynamodb.tables.vehicles,
-        Item: {
-          PK: `VEHICLE#${vehicleId}`,
-          SK: 'METADATA',
-          GSI1PK: `COMPANY#${vehicle.companyId}`,
-          GSI1SK: `VEHICLE#${vehicle.name}`,
-          ...newVehicle
-        }
-      }));
-
-      return newVehicle;
-    } catch (error) {
-      this.logger.error('Error creating vehicle', { error, vehicle });
-      throw error;
-    }
-  }
-
-  /**
-   * Get vehicle by ID
-   * 
-   * @param vehicleId - Vehicle ID
-   * @returns Vehicle or null if not found
-   */
-  async getVehicle(vehicleId: string): Promise<IVehicle | null> {
-    try {
-      const result = await this.docClient.send(new GetCommand({
-        TableName: config.dynamodb.tables.vehicles,
-        Key: {
-          PK: `VEHICLE#${vehicleId}`,
-          SK: 'METADATA'
-        }
-      }));
-
-      if (!result.Item) {
-        return null;
-      }
-
-      return result.Item as IVehicle;
-    } catch (error) {
-      this.logger.error('Error getting vehicle', { error, vehicleId });
-      throw error;
-    }
-  }
-
-  /**
-   * Update vehicle
-   * 
-   * @param vehicleId - Vehicle ID
-   * @param updates - Vehicle updates
-   * @param userId - User ID making the update
-   * @returns Updated vehicle
-   */
-  async updateVehicle(
-    vehicleId: string,
-    updates: Partial<IVehicle>,
-    userId: string
-  ): Promise<IVehicle | null> {
-    try {
-      // Get current vehicle data
-      const vehicle = await this.getVehicle(vehicleId);
-      if (!vehicle) {
-        throw new Error('Vehicle not found');
-      }
-
-      // Build update expression
-      let updateExpression = 'set updated = :updated, updatedBy = :updatedBy';
-      const expressionAttributeValues: Record<string, any> = {
-        ':updated': new Date().toISOString(),
-        ':updatedBy': userId
-      };
-      const expressionAttributeNames: Record<string, string> = {};
-
-      // Add each update field to the expression
-      for (const [key, value] of Object.entries(updates)) {
-        // Skip vehicleId, companyId, created, and createdBy as they shouldn't be updated
-        if (['vehicleId', 'companyId', 'created', 'createdBy'].includes(key)) {
-          continue;
-        }
-
-        updateExpression += `, #${key} = :${key}`;
-        expressionAttributeNames[`#${key}`] = key;
-        expressionAttributeValues[`:${key}`] = value;
-      }
-
-      // Update vehicle in DynamoDB
-      const result = await this.docClient.send(new UpdateCommand({
-        TableName: config.dynamodb.tables.vehicles,
-        Key: {
-          PK: `VEHICLE#${vehicleId}`,
-          SK: 'METADATA'
-        },
-        UpdateExpression: updateExpression,
-        ExpressionAttributeNames: expressionAttributeNames,
-        ExpressionAttributeValues: expressionAttributeValues,
-        ReturnValues: 'ALL_NEW'
-      }));
-
-      if (!result.Attributes) {
-        return null;
-      }
-
-      return result.Attributes as IVehicle;
-    } catch (error) {
-      this.logger.error('Error updating vehicle', { error, vehicleId, updates });
-      throw error;
-    }
   }
 
   /**
    * Get all vehicles for a company
    * 
    * @param companyId - Company ID
-   * @param status - Optional status filter
    * @returns List of vehicles
    */
-  async getCompanyVehicles(
-    companyId: string,
-    status?: VehicleStatus
-  ): Promise<IVehicle[]> {
+  async getCompanyVehicles(companyId: string): Promise<Vehicle[]> {
     try {
-      const params: any = {
-        TableName: config.dynamodb.tables.vehicles,
-        IndexName: 'GSI1',
-        KeyConditionExpression: 'GSI1PK = :pk',
-        ExpressionAttributeValues: {
-          ':pk': `COMPANY#${companyId}`
-        }
-      };
-
-      // Add status filter if provided
-      if (status) {
-        params.FilterExpression = '#status = :status';
-        params.ExpressionAttributeNames = { '#status': 'status' };
-        params.ExpressionAttributeValues[':status'] = status;
+      // Validate input
+      if (!companyId || typeof companyId !== 'string') {
+        throw new Error('Invalid company ID');
       }
+      
+      const result = await this.docClient.send(new QueryCommand({
+        TableName: config.dynamodb.tables.vehicles,
+        KeyConditionExpression: 'companyId = :companyId',
+        ExpressionAttributeValues: {
+          ':companyId': companyId
+        }
+      }));
 
-      const result = await this.docClient.send(new QueryCommand(params));
-
-      return (result.Items || []) as IVehicle[];
+      return result.Items as Vehicle[] || [];
     } catch (error) {
       this.logger.error('Error getting company vehicles', { error, companyId });
       throw error;
@@ -1211,94 +86,784 @@ export class VehicleInventoryService {
   }
 
   /**
-   * Update vehicle inventory level
+   * Get vehicle details
+   * 
+   * @param vehicleId - Vehicle ID
+   * @returns Vehicle details
+   */
+  async getVehicle(vehicleId: string): Promise<Vehicle | null> {
+    try {
+      // Validate input
+      if (!vehicleId || typeof vehicleId !== 'string') {
+        throw new Error('Invalid vehicle ID');
+      }
+      
+      const result = await this.docClient.send(new GetCommand({
+        TableName: config.dynamodb.tables.vehicles,
+        Key: { id: vehicleId }
+      }));
+
+      return result.Item as Vehicle || null;
+    } catch (error) {
+      this.logger.error('Error getting vehicle', { error, vehicleId });
+      throw error;
+    }
+  }
+
+  /**
+   * Create a new vehicle
+   * 
+   * @param companyId - Company ID
+   * @param data - Vehicle data
+   * @param userId - User ID creating the vehicle
+   * @returns Created vehicle
+   */
+  async createVehicle(
+    companyId: string, 
+    data: Omit<Vehicle, 'id' | 'companyId' | 'created' | 'updated' | 'createdBy' | 'updatedBy'>,
+    userId: string
+  ): Promise<Vehicle> {
+    try {
+      // Validate inputs
+      if (!companyId || typeof companyId !== 'string') {
+        throw new Error('Invalid company ID');
+      }
+      
+      if (!data || typeof data !== 'object') {
+        throw new Error('Invalid vehicle data');
+      }
+      
+      if (!data.name || typeof data.name !== 'string') {
+        throw new Error('Vehicle name is required');
+      }
+      
+      if (!data.type || typeof data.type !== 'string') {
+        throw new Error('Vehicle type is required');
+      }
+      
+      if (!userId || typeof userId !== 'string') {
+        throw new Error('Invalid user ID');
+      }
+      
+      const vehicleId = uuidv4();
+      const now = new Date().toISOString();
+      
+      const vehicle: Vehicle = {
+        id: vehicleId,
+        companyId,
+        name: data.name,
+        type: data.type,
+        licensePlate: data.licensePlate,
+        vin: data.vin,
+        model: data.model,
+        year: data.year,
+        created: now,
+        updated: now,
+        createdBy: userId,
+        updatedBy: userId
+      };
+
+      await this.docClient.send(new PutCommand({
+        TableName: config.dynamodb.tables.vehicles,
+        Item: vehicle
+      }));
+
+      return vehicle;
+    } catch (error) {
+      this.logger.error('Error creating vehicle', { error, companyId });
+      throw error;
+    }
+  }
+
+  /**
+   * Update vehicle details
+   * 
+   * @param vehicleId - Vehicle ID
+   * @param data - Updated vehicle data
+   * @param userId - User ID updating the vehicle
+   * @returns Updated vehicle
+   */
+  async updateVehicle(
+    vehicleId: string,
+    data: Partial<Omit<Vehicle, 'id' | 'companyId' | 'created' | 'updated' | 'createdBy' | 'updatedBy'>>,
+    userId: string
+  ): Promise<Vehicle | null> {
+    try {
+      // Validate inputs
+      if (!vehicleId || typeof vehicleId !== 'string') {
+        throw new Error('Invalid vehicle ID');
+      }
+      
+      if (!data || typeof data !== 'object') {
+        throw new Error('Invalid vehicle data');
+      }
+      
+      if (!userId || typeof userId !== 'string') {
+        throw new Error('Invalid user ID');
+      }
+      
+      // Get existing vehicle
+      const vehicle = await this.getVehicle(vehicleId);
+      if (!vehicle) {
+        throw new Error('Vehicle not found');
+      }
+      
+      // Create update expression and attribute values
+      let updateExpression = 'set updated = :updated, updatedBy = :updatedBy';
+      const expressionAttributeValues: Record<string, any> = {
+        ':updated': new Date().toISOString(),
+        ':updatedBy': userId
+      };
+      
+      // Add fields to update
+      Object.keys(data).forEach((key) => {
+        // Skip id, companyId, created, and createdBy
+        if (['id', 'companyId', 'created', 'createdBy'].includes(key)) {
+          return;
+        }
+        
+        updateExpression += `, ${key} = :${key}`;
+        expressionAttributeValues[`:${key}`] = data[key as keyof typeof data];
+      });
+      
+      // Update vehicle
+      const result = await this.docClient.send(new UpdateCommand({
+        TableName: config.dynamodb.tables.vehicles,
+        Key: { id: vehicleId },
+        UpdateExpression: updateExpression,
+        ExpressionAttributeValues: expressionAttributeValues,
+        ReturnValues: 'ALL_NEW'
+      }));
+
+      return result.Attributes as Vehicle || null;
+    } catch (error) {
+      this.logger.error('Error updating vehicle', { error, vehicleId });
+      throw error;
+    }
+  }
+  
+  /**
+   * Delete a vehicle
+   * 
+   * @param vehicleId - Vehicle ID
+   * @returns Success status
+   */
+  async deleteVehicle(vehicleId: string): Promise<boolean> {
+    try {
+      // Validate input
+      if (!vehicleId || typeof vehicleId !== 'string') {
+        throw new Error('Invalid vehicle ID');
+      }
+      
+      // Get vehicle to ensure it exists
+      const vehicle = await this.getVehicle(vehicleId);
+      if (!vehicle) {
+        throw new Error('Vehicle not found');
+      }
+      
+      // Delete vehicle
+      await this.docClient.send(new DeleteCommand({
+        TableName: config.dynamodb.tables.vehicles,
+        Key: { id: vehicleId }
+      }));
+      
+      // Delete all vehicle inventory items
+      const inventoryItems = await this.getVehicleInventory(vehicleId);
+      for (const item of inventoryItems) {
+        await this.docClient.send(new DeleteCommand({
+          TableName: config.dynamodb.tables.vehicleInventory,
+          Key: { id: item.id }
+        }));
+      }
+      
+      return true;
+    } catch (error) {
+      this.logger.error('Error deleting vehicle', { error, vehicleId });
+      throw error;
+    }
+  }
+  
+  /**
+   * Get vehicle inventory
+   * 
+   * @param vehicleId - Vehicle ID
+   * @returns List of inventory items
+   */
+  async getVehicleInventory(vehicleId: string): Promise<VehicleItem[]> {
+    try {
+      // Validate input
+      if (!vehicleId || typeof vehicleId !== 'string') {
+        throw new Error('Invalid vehicle ID');
+      }
+      
+      const result = await this.docClient.send(new QueryCommand({
+        TableName: config.dynamodb.tables.vehicleInventory,
+        IndexName: 'VehicleIndex',
+        KeyConditionExpression: 'vehicleId = :vehicleId',
+        ExpressionAttributeValues: {
+          ':vehicleId': vehicleId
+        }
+      }));
+
+      return result.Items as VehicleItem[] || [];
+    } catch (error) {
+      this.logger.error('Error getting vehicle inventory', { error, vehicleId });
+      throw error;
+    }
+  }
+  
+  /**
+   * Get vehicle inventory item
+   * 
+   * @param itemId - Item ID
+   * @returns Inventory item
+   */
+  async getVehicleInventoryItem(itemId: string): Promise<VehicleItem | null> {
+    try {
+      // Validate input
+      if (!itemId || typeof itemId !== 'string') {
+        throw new Error('Invalid item ID');
+      }
+      
+      const result = await this.docClient.send(new GetCommand({
+        TableName: config.dynamodb.tables.vehicleInventory,
+        Key: { id: itemId }
+      }));
+
+      return result.Item as VehicleItem || null;
+    } catch (error) {
+      this.logger.error('Error getting vehicle inventory item', { error, itemId });
+      throw error;
+    }
+  }
+  
+  /**
+   * Update vehicle inventory item
+   * 
+   * @param itemId - Item ID
+   * @param quantity - New quantity
+   * @param minQuantity - Minimum quantity threshold
+   * @param userId - User ID
+   * @returns Updated item
+   */
+  async updateVehicleInventoryItem(
+    itemId: string,
+    quantity: number,
+    minQuantity: number | null,
+    userId: string
+  ): Promise<VehicleItem | null> {
+    try {
+      // Validate inputs
+      if (!itemId || typeof itemId !== 'string') {
+        throw new Error('Invalid item ID');
+      }
+      
+      if (typeof quantity !== 'number' || quantity < 0) {
+        throw new Error('Quantity must be a non-negative number');
+      }
+      
+      if (minQuantity !== null && (typeof minQuantity !== 'number' || minQuantity < 0)) {
+        throw new Error('Min quantity must be a non-negative number');
+      }
+      
+      if (!userId || typeof userId !== 'string') {
+        throw new Error('Invalid user ID');
+      }
+      
+      // Get existing item
+      const item = await this.getVehicleInventoryItem(itemId);
+      if (!item) {
+        throw new Error('Inventory item not found');
+      }
+      
+      // Build update expression
+      let updateExpression = 'set quantity = :quantity, updated = :updated, updatedBy = :updatedBy';
+      const expressionAttributeValues: Record<string, any> = {
+        ':quantity': quantity,
+        ':updated': new Date().toISOString(),
+        ':updatedBy': userId
+      };
+      
+      // Add min quantity if provided
+      if (minQuantity !== null) {
+        updateExpression += ', minQuantity = :minQuantity';
+        expressionAttributeValues[':minQuantity'] = minQuantity;
+      }
+      
+      // Update item
+      const result = await this.docClient.send(new UpdateCommand({
+        TableName: config.dynamodb.tables.vehicleInventory,
+        Key: { id: itemId },
+        UpdateExpression: updateExpression,
+        ExpressionAttributeValues: expressionAttributeValues,
+        ReturnValues: 'ALL_NEW'
+      }));
+
+      return result.Attributes as VehicleItem || null;
+    } catch (error) {
+      this.logger.error('Error updating vehicle inventory item', { error, itemId });
+      throw error;
+    }
+  }
+  
+  /**
+   * Add material to vehicle inventory
    * 
    * @param vehicleId - Vehicle ID
    * @param materialId - Material ID
-   * @param quantity - New quantity
-   * @param userId - User ID making the update
-   * @param minQuantity - Optional min quantity
-   * @param standardQuantity - Optional standard quantity
-   * @param location - Optional location within vehicle
-   * @returns Updated inventory level
+   * @param materialName - Material name
+   * @param quantity - Quantity to add
+   * @param minQuantity - Minimum quantity threshold
+   * @param userId - User ID
+   * @returns Created or updated item
    */
-  async updateVehicleInventoryLevel(
+  async addMaterialToVehicle(
     vehicleId: string,
     materialId: string,
+    materialName: string,
     quantity: number,
-    userId: string,
-    minQuantity?: number,
-    standardQuantity?: number,
-    location?: string
-  ): Promise<IVehicleInventoryLevel> {
+    minQuantity: number | undefined,
+    userId: string
+  ): Promise<VehicleItem> {
     try {
-      // Check if inventory level exists
-      const existingLevel = await this.getVehicleInventoryLevel(vehicleId, materialId);
+      // Validate inputs
+      if (!vehicleId || typeof vehicleId !== 'string') {
+        throw new Error('Invalid vehicle ID');
+      }
       
-      if (existingLevel) {
-        // Update existing inventory level
-        const result = await this.docClient.send(new UpdateCommand({
-          TableName: config.dynamodb.tables.vehicleInventory,
-          Key: {
-            PK: `VEHICLE#${vehicleId}`,
-            SK: `INVENTORY#${materialId}`
-          },
-          UpdateExpression: 'set currentQuantity = :qty, minQuantity = :min, standardQuantity = :std, location = :loc, updated = :updated, updatedBy = :updatedBy',
-          ExpressionAttributeValues: {
-            ':qty': quantity,
-            ':min': minQuantity !== undefined ? minQuantity : existingLevel.minQuantity,
-            ':std': standardQuantity !== undefined ? standardQuantity : existingLevel.standardQuantity,
-            ':loc': location || existingLevel.location,
-            ':updated': new Date().toISOString(),
-            ':updatedBy': userId
-          },
-          ReturnValues: 'ALL_NEW'
-        }));
-
-        return {
-          vehicleId,
-          materialId,
-          currentQuantity: quantity,
-          minQuantity: minQuantity !== undefined ? minQuantity : existingLevel.minQuantity,
-          standardQuantity: standardQuantity !== undefined ? standardQuantity : existingLevel.standardQuantity,
-          location: location || existingLevel.location,
-          lastStockCheck: existingLevel.lastStockCheck,
-          created: existingLevel.created,
-          updated: new Date().toISOString(),
-          createdBy: existingLevel.createdBy,
-          updatedBy: userId
-        };
+      if (!materialId || typeof materialId !== 'string') {
+        throw new Error('Invalid material ID');
+      }
+      
+      if (!materialName || typeof materialName !== 'string') {
+        throw new Error('Material name is required');
+      }
+      
+      if (typeof quantity !== 'number' || quantity < 0) {
+        throw new Error('Quantity must be a non-negative number');
+      }
+      
+      if (minQuantity !== undefined && (typeof minQuantity !== 'number' || minQuantity < 0)) {
+        throw new Error('Min quantity must be a non-negative number');
+      }
+      
+      if (!userId || typeof userId !== 'string') {
+        throw new Error('Invalid user ID');
+      }
+      
+      // Check if vehicle exists
+      const vehicle = await this.getVehicle(vehicleId);
+      if (!vehicle) {
+        throw new Error('Vehicle not found');
+      }
+      
+      // Check if material already exists in vehicle inventory
+      const existingItems = await this.getVehicleInventory(vehicleId);
+      const existingItem = existingItems.find(item => item.materialId === materialId);
+      
+      if (existingItem) {
+        // Update existing item
+        const newQuantity = existingItem.quantity + quantity;
+        return (await this.updateVehicleInventoryItem(
+          existingItem.id,
+          newQuantity,
+          minQuantity ?? null,
+          userId
+        )) as VehicleItem;
       } else {
-        // Create new inventory level
+        // Create new item
+        const itemId = uuidv4();
         const now = new Date().toISOString();
-        const newLevel: IVehicleInventoryLevel = {
+        
+        const item: VehicleItem = {
+          id: itemId,
           vehicleId,
           materialId,
-          currentQuantity: quantity,
+          materialName,
+          quantity,
           minQuantity,
-          standardQuantity,
-          location,
           created: now,
           updated: now,
           createdBy: userId,
           updatedBy: userId
         };
-
+        
         await this.docClient.send(new PutCommand({
           TableName: config.dynamodb.tables.vehicleInventory,
-          Item: {
-            PK: `VEHICLE#${vehicleId}`,
-            SK: `INVENTORY#${materialId}`,
-            GSI1PK: `MATERIAL#${materialId}`,
-            GSI1SK: `VEHICLE#${vehicleId}`,
-            ...newLevel
-          }
+          Item: item
         }));
-
-        return newLevel;
+        
+        return item;
       }
     } catch (error) {
-      this.logger.error('Error updating vehicle inventory level', { error, vehicleId, materialId });
+      this.logger.error('Error adding material to vehicle', { error, vehicleId, materialId });
       throw error;
     }
   }
+  
+  /**
+   * Remove material from vehicle inventory
+   * 
+   * @param itemId - Item ID
+   * @param userId - User ID
+   * @returns Success status
+   */
+  async removeMaterialFromVehicle(itemId: string, userId: string): Promise<boolean> {
+    try {
+      // Validate inputs
+      if (!itemId || typeof itemId !== 'string') {
+        throw new Error('Invalid item ID');
+      }
+      
+      if (!userId || typeof userId !== 'string') {
+        throw new Error('Invalid user ID');
+      }
+      
+      // Check if item exists
+      const item = await this.getVehicleInventoryItem(itemId);
+      if (!item) {
+        throw new Error('Inventory item not found');
+      }
+      
+      // Delete item
+      await this.docClient.send(new DeleteCommand({
+        TableName: config.dynamodb.tables.vehicleInventory,
+        Key: { id: itemId }
+      }));
+      
+      return true;
+    } catch (error) {
+      this.logger.error('Error removing material from vehicle', { error, itemId });
+      throw error;
+    }
+  }
+  
+  /**
+   * Transfer material between vehicles
+   * 
+   * @param sourceVehicleId - Source vehicle ID
+   * @param targetVehicleId - Target vehicle ID
+   * @param materialId - Material ID
+   * @param quantity - Quantity to transfer
+   * @param userId - User ID
+   * @returns Transfer result
+   */
+  async transferMaterial(
+    sourceVehicleId: string,
+    targetVehicleId: string,
+    materialId: string,
+    quantity: number,
+    userId: string
+  ): Promise<TransferResult> {
+    try {
+      // Validate inputs
+      if (!sourceVehicleId || typeof sourceVehicleId !== 'string') {
+        throw new Error('Invalid source vehicle ID');
+      }
+      
+      if (!targetVehicleId || typeof targetVehicleId !== 'string') {
+        throw new Error('Invalid target vehicle ID');
+      }
+      
+      if (!materialId || typeof materialId !== 'string') {
+        throw new Error('Invalid material ID');
+      }
+      
+      if (typeof quantity !== 'number' || quantity <= 0) {
+        throw new Error('Quantity must be a positive number');
+      }
+      
+      if (!userId || typeof userId !== 'string') {
+        throw new Error('Invalid user ID');
+      }
+      
+      // Check if vehicles exist
+      const sourceVehicle = await this.getVehicle(sourceVehicleId);
+      if (!sourceVehicle) {
+        throw new Error('Source vehicle not found');
+      }
+      
+      const targetVehicle = await this.getVehicle(targetVehicleId);
+      if (!targetVehicle) {
+        throw new Error('Target vehicle not found');
+      }
+      
+      // Get source and target inventory items
+      const sourceItems = await this.getVehicleInventory(sourceVehicleId);
+      const sourceItem = sourceItems.find(item => item.materialId === materialId);
+      
+      if (!sourceItem) {
+        throw new Error('Material not found in source vehicle');
+      }
+      
+      if (sourceItem.quantity < quantity) {
+        throw new Error('Insufficient quantity in source vehicle');
+      }
+      
+      const targetItems = await this.getVehicleInventory(targetVehicleId);
+      const targetItem = targetItems.find(item => item.materialId === materialId);
+      
+      // Update source item
+      const newSourceQuantity = sourceItem.quantity - quantity;
+      let updatedSourceItem: VehicleItem | null = null;
+      
+      if (newSourceQuantity > 0) {
+        updatedSourceItem = await this.updateVehicleInventoryItem(
+          sourceItem.id,
+          newSourceQuantity,
+          sourceItem.minQuantity ?? null,
+          userId
+        );
+      } else {
+        // Remove source item if quantity becomes 0
+        await this.removeMaterialFromVehicle(sourceItem.id, userId);
+      }
+      
+      // Update or create target item
+      let updatedTargetItem: VehicleItem | null = null;
+      
+      if (targetItem) {
+        // Update existing target item
+        const newTargetQuantity = targetItem.quantity + quantity;
+        updatedTargetItem = await this.updateVehicleInventoryItem(
+          targetItem.id,
+          newTargetQuantity,
+          targetItem.minQuantity ?? null,
+          userId
+        );
+      } else {
+        // Create new target item
+        updatedTargetItem = await this.addMaterialToVehicle(
+          targetVehicleId,
+          materialId,
+          sourceItem.materialName,
+          quantity,
+          sourceItem.minQuantity,
+          userId
+        );
+      }
+      
+      return {
+        sourceId: sourceVehicleId,
+        targetId: targetVehicleId,
+        materialId,
+        quantity,
+        sourceInventory: updatedSourceItem,
+        targetInventory: updatedTargetItem
+      };
+    } catch (error) {
+      this.logger.error('Error transferring material', { 
+        error, 
+        sourceVehicleId, 
+        targetVehicleId, 
+        materialId 
+      });
+      throw error;
+    }
+  }
+  
+  /**
+   * Get all low stock items across vehicles
+   * 
+   * @param companyId - Company ID
+   * @returns List of low stock items with vehicle info
+   */
+  async getLowStockItems(companyId: string): Promise<any[]> {
+    try {
+      // Validate input
+      if (!companyId || typeof companyId !== 'string') {
+        throw new Error('Invalid company ID');
+      }
+      
+      // Get all company vehicles
+      const vehicles = await this.getCompanyVehicles(companyId);
+      
+      // Get inventory for each vehicle and check for low stock
+      const lowStockItems: any[] = [];
+      
+      for (const vehicle of vehicles) {
+        const inventoryItems = await this.getVehicleInventory(vehicle.id);
+        
+        for (const item of inventoryItems) {
+          if (item.minQuantity !== undefined && item.quantity <= item.minQuantity) {
+            lowStockItems.push({
+              ...item,
+              vehicleName: vehicle.name,
+              vehicleType: vehicle.type
+            });
+          }
+        }
+      }
+      
+      return lowStockItems;
+    } catch (error) {
+      this.logger.error('Error getting low stock items', { error, companyId });
+      throw error;
+    }
+  }
+  
+  /**
+   * Import vehicle inventory from CSV
+   * 
+   * @param vehicleId - Vehicle ID
+   * @param csvData - CSV data
+   * @param userId - User ID
+   * @returns Import result
+   */
+  async importInventoryFromCsv(
+    vehicleId: string,
+    csvData: string,
+    userId: string
+  ): Promise<{ added: number; updated: number; errors: string[] }> {
+    try {
+      // Validate inputs
+      if (!vehicleId || typeof vehicleId !== 'string') {
+        throw new Error('Invalid vehicle ID');
+      }
+      
+      if (!csvData || typeof csvData !== 'string') {
+        throw new Error('Invalid CSV data');
+      }
+      
+      if (!userId || typeof userId !== 'string') {
+        throw new Error('Invalid user ID');
+      }
+      
+      // Check if vehicle exists
+      const vehicle = await this.getVehicle(vehicleId);
+      if (!vehicle) {
+        throw new Error('Vehicle not found');
+      }
+      
+      // Parse CSV data
+      const lines = csvData.split('\n');
+      const headers = lines[0].split(',').map(header => header.trim());
+      
+      // Validate CSV structure
+      const requiredHeaders = ['materialId', 'materialName', 'quantity'];
+      for (const header of requiredHeaders) {
+        if (!headers.includes(header)) {
+          throw new Error(`Missing required header: ${header}`);
+        }
+      }
+      
+      // Process CSV rows
+      const results = {
+        added: 0,
+        updated: 0,
+        errors: [] as string[]
+      };
+      
+      for (let i = 1; i < lines.length; i++) {
+        if (!lines[i].trim()) {
+          continue; // Skip empty lines
+        }
+        
+        try {
+          const values = lines[i].split(',').map(value => value.trim());
+          const row: Record<string, string> = {};
+          
+          // Create object from CSV row
+          headers.forEach((header, index) => {
+            row[header] = values[index] || '';
+          });
+          
+          // Validate row data
+          if (!row.materialId) {
+            throw new Error('Missing material ID');
+          }
+          
+          if (!row.materialName) {
+            throw new Error('Missing material name');
+          }
+          
+          const quantity = parseInt(row.quantity, 10);
+          if (isNaN(quantity) || quantity < 0) {
+            throw new Error('Invalid quantity');
+          }
+          
+          const minQuantity = row.minQuantity ? parseInt(row.minQuantity, 10) : undefined;
+          if (minQuantity !== undefined && (isNaN(minQuantity) || minQuantity < 0)) {
+            throw new Error('Invalid min quantity');
+          }
+          
+          // Add or update material
+          const existingItems = await this.getVehicleInventory(vehicleId);
+          const existingItem = existingItems.find(item => item.materialId === row.materialId);
+          
+          if (existingItem) {
+            // Update existing item
+            await this.updateVehicleInventoryItem(
+              existingItem.id,
+              quantity,
+              minQuantity ?? null,
+              userId
+            );
+            results.updated++;
+          } else {
+            // Create new item
+            await this.addMaterialToVehicle(
+              vehicleId,
+              row.materialId,
+              row.materialName,
+              quantity,
+              minQuantity,
+              userId
+            );
+            results.added++;
+          }
+        } catch (error) {
+          results.errors.push(`Row ${i}: ${(error as Error).message}`);
+        }
+      }
+      
+      return results;
+    } catch (error) {
+      this.logger.error('Error importing inventory from CSV', { error, vehicleId });
+      throw error;
+    }
+  }
+  
+  /**
+   * Export vehicle inventory to CSV
+   * 
+   * @param vehicleId - Vehicle ID
+   * @returns CSV data
+   */
+  async exportInventoryToCsv(vehicleId: string): Promise<string> {
+    try {
+      // Validate input
+      if (!vehicleId || typeof vehicleId !== 'string') {
+        throw new Error('Invalid vehicle ID');
+      }
+      
+      // Check if vehicle exists
+      const vehicle = await this.getVehicle(vehicleId);
+      if (!vehicle) {
+        throw new Error('Vehicle not found');
+      }
+      
+      // Get vehicle inventory
+      const inventoryItems = await this.getVehicleInventory(vehicleId);
+      
+      // Generate CSV
+      const headers = ['materialId', 'materialName', 'quantity', 'minQuantity'];
+      let csv = headers.join(',') + '\n';
+      
+      for (const item of inventoryItems) {
+        const row = [
+          item.materialId,
+          item.materialName,
+          item.quantity.toString(),
+          item.minQuantity !== undefined ? item.minQuantity.toString() : ''
+        ];
+        csv += row.join(',') + '\n';
+      }
+      
+      return csv;
+    } catch (error) {
+      this.logger.error('Error exporting inventory to CSV', { error, vehicleId });
+      throw error;
+    }
+  }
+}
