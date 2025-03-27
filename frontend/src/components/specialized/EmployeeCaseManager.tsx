@@ -34,10 +34,7 @@ import {
   getCase, 
   updateCase, 
   getCaseTemplates,
-  applyCaseTemplate,
-  addCaseItem,
-  updateCaseItem,
-  removeCaseItem
+  applyCaseTemplate 
 } from '../../services/employee-case.service';
 import { useAuth } from '../../hooks/useAuth';
 
@@ -96,13 +93,6 @@ export const EmployeeCaseManager: React.FC<IEmployeeCaseManagerProps> = ({
   const [templateFormData, setTemplateFormData] = useState({
     templateId: '',
     caseId: ''
-  });
-  
-  // State for item management
-  const [addItemFormOpen, setAddItemFormOpen] = useState<boolean>(false);
-  const [addItemFormData, setAddItemFormData] = useState({
-    materialId: '',
-    quantity: 1
   });
 
   // Hooks
@@ -262,97 +252,34 @@ export const EmployeeCaseManager: React.FC<IEmployeeCaseManagerProps> = ({
       onError: (error) => {
         toast.error(`Failed to apply template: ${error.message || 'Unknown error'}`);
       }
-    }
-  );
-  
-  // Mutation for adding a new item to a case
-  const addItemMutation = useMutation<
-    EmployeeCase, 
-    Error, 
-    {caseId: string, materialId: string, quantity: number}
-  >(
-    async ({caseId, materialId, quantity}) => {
+      // frontend/src/components/specialized/EmployeeCaseManager.tsx (continued)
+
+  // Mutation for applying a template to a case
+  const applyTemplateMutation = useMutation<EmployeeCase, Error, typeof templateFormData>(
+    async (data) => {
       try {
-        if (!caseId || !materialId || quantity <= 0) {
-          throw new Error('Case, material, and quantity are required');
+        if (!data.templateId || !data.caseId) {
+          throw new Error('Template and case are required');
         }
         
-        return await addCaseItem(caseId, materialId, quantity);
+        return await applyCaseTemplate(data.caseId, data.templateId);
       } catch (error) {
-        console.error('Error adding item:', error);
-        throw error instanceof Error ? error : new Error('Unknown error adding item');
+        console.error('Error applying template:', error);
+        throw error instanceof Error ? error : new Error('Unknown error applying template');
       }
     },
     {
       onSuccess: (data) => {
-        toast.success('Item added successfully');
+        toast.success('Template applied successfully');
         queryClient.invalidateQueries(['employeeCase', data.id]);
-        setAddItemFormOpen(false);
-        setAddItemFormData({
-          materialId: '',
-          quantity: 1
+        setTemplateFormOpen(false);
+        setTemplateFormData({
+          templateId: '',
+          caseId: ''
         });
       },
       onError: (error) => {
-        toast.error(`Failed to add item: ${error.message || 'Unknown error'}`);
-      }
-    }
-  );
-  
-  // Mutation for updating an item quantity
-  const updateItemMutation = useMutation<
-    EmployeeCase,
-    Error,
-    {caseId: string, itemId: string, quantity: number}
-  >(
-    async ({caseId, itemId, quantity}) => {
-      try {
-        if (!caseId || !itemId || quantity < 0) {
-          throw new Error('Invalid parameters');
-        }
-        
-        return await updateCaseItem(caseId, itemId, quantity);
-      } catch (error) {
-        console.error('Error updating item:', error);
-        throw error instanceof Error ? error : new Error('Unknown error updating item');
-      }
-    },
-    {
-      onSuccess: (data) => {
-        toast.success('Item updated successfully');
-        queryClient.invalidateQueries(['employeeCase', data.id]);
-      },
-      onError: (error) => {
-        toast.error(`Failed to update item: ${error.message || 'Unknown error'}`);
-      }
-    }
-  );
-  
-  // Mutation for removing an item
-  const removeItemMutation = useMutation<
-    EmployeeCase,
-    Error,
-    {caseId: string, itemId: string}
-  >(
-    async ({caseId, itemId}) => {
-      try {
-        if (!caseId || !itemId) {
-          throw new Error('Case and item IDs are required');
-        }
-        
-        return await removeCaseItem(caseId, itemId);
-      } catch (error) {
-        console.error('Error removing item:', error);
-        throw error instanceof Error ? error : new Error('Unknown error removing item');
-      }
-    },
-    {
-      onSuccess: (data) => {
-        toast.success('Item removed successfully');
-        queryClient.invalidateQueries(['employeeCase', data.id]);
-      },
-      onError: (error) => {
-        toast.error(`Failed to remove item: ${error.message || 'Unknown error'}`);
+        toast.error(`Failed to apply template: ${error.message || 'Unknown error'}`);
       }
     }
   );
@@ -364,85 +291,71 @@ export const EmployeeCaseManager: React.FC<IEmployeeCaseManagerProps> = ({
     }
     
     const searchLower = searchTerm.toLowerCase();
-    return cases.filter(caseItem => 
-      caseItem.name.toLowerCase().includes(searchLower) ||
-      caseItem.employeeName.toLowerCase().includes(searchLower)
+    return cases.filter(
+      caseItem => 
+        caseItem.name.toLowerCase().includes(searchLower) ||
+        caseItem.employeeName.toLowerCase().includes(searchLower)
     );
   }, [cases, searchTerm]);
+
+  // Handle selecting a case
+  const handleCaseSelect = useCallback((caseId: string) => {
+    setSelectedCaseId(caseId);
+    setSearchTerm('');
+    
+    // Pre-fill template form with case ID
+    setTemplateFormData(prev => ({
+      ...prev,
+      caseId
+    }));
+  }, []);
 
   // Handle search input change
   const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setSearchTerm(e.target.value);
   }, []);
 
-  // Handle creating a new case
-  const handleCreateCase = useCallback((e: React.FormEvent) => {
+  // Handle create form input change
+  const handleCreateFormChange = useCallback((field: string, value: string) => {
+    setCreateFormData(prev => ({
+      ...prev,
+      [field]: value
+    }));
+  }, []);
+
+  // Handle create form submission
+  const handleCreateFormSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!createFormData.name || !createFormData.employeeId) {
-      toast.error('Name and employee are required');
+    if (!createFormData.name.trim()) {
+      toast.error('Please enter a case name');
+      return;
+    }
+    
+    if (!createFormData.employeeId) {
+      toast.error('Please select an employee');
       return;
     }
     
     createCaseMutation.mutate(createFormData);
   }, [createFormData, createCaseMutation]);
 
-  // Handle applying a template
-  const handleApplyTemplate = useCallback((e: React.FormEvent) => {
+  // Handle template form submission
+  const handleTemplateFormSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!templateFormData.templateId || !templateFormData.caseId) {
-      toast.error('Template and case are required');
+    if (!templateFormData.templateId) {
+      toast.error('Please select a template');
+      return;
+    }
+    
+    if (!templateFormData.caseId) {
+      toast.error('Please select a case');
       return;
     }
     
     applyTemplateMutation.mutate(templateFormData);
   }, [templateFormData, applyTemplateMutation]);
-  
-  // Handle adding a new item
-  const handleAddItem = useCallback((e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!selectedCaseId || !addItemFormData.materialId || addItemFormData.quantity <= 0) {
-      toast.error('Material and quantity are required');
-      return;
-    }
-    
-    addItemMutation.mutate({
-      caseId: selectedCaseId,
-      materialId: addItemFormData.materialId,
-      quantity: addItemFormData.quantity
-    });
-  }, [selectedCaseId, addItemFormData, addItemMutation]);
-  
-  // Handle updating an item quantity
-  const handleUpdateItemQuantity = useCallback((itemId: string, quantity: number) => {
-    if (!selectedCaseId || !itemId || quantity < 0) {
-      toast.error('Invalid item or quantity');
-      return;
-    }
-    
-    updateItemMutation.mutate({
-      caseId: selectedCaseId,
-      itemId,
-      quantity
-    });
-  }, [selectedCaseId, updateItemMutation]);
-  
-  // Handle removing an item
-  const handleRemoveItem = useCallback((itemId: string) => {
-    if (!selectedCaseId || !itemId) {
-      toast.error('Invalid item');
-      return;
-    }
-    
-    if (confirm('Are you sure you want to remove this item?')) {
-      removeItemMutation.mutate({
-        caseId: selectedCaseId,
-        itemId
-      });
-    }
-  }, [selectedCaseId, removeItemMutation]);
 
   // Show loading state
   if (isLoadingCases) {
@@ -463,7 +376,7 @@ export const EmployeeCaseManager: React.FC<IEmployeeCaseManagerProps> = ({
         <CardContent className="flex justify-center items-center py-10 text-red-500">
           <AlertCircle className="mr-2" aria-hidden="true" />
           <span>
-            Error loading cases: {casesError instanceof Error ? casesError.message : 'Unknown error'}
+            Error loading employee cases: {casesError instanceof Error ? casesError.message : 'Unknown error'}
           </span>
         </CardContent>
       </Card>
@@ -473,7 +386,7 @@ export const EmployeeCaseManager: React.FC<IEmployeeCaseManagerProps> = ({
   return (
     <Card className={`bg-white shadow-md ${className}`}>
       <CardHeader>
-        <div className="flex justify-between items-center">
+        <div className="flex items-start justify-between">
           <div>
             <CardTitle>Employee Material Cases</CardTitle>
             <CardDescription>
@@ -485,28 +398,25 @@ export const EmployeeCaseManager: React.FC<IEmployeeCaseManagerProps> = ({
             <DialogTrigger asChild>
               <Button variant="primary">
                 <Plus className="h-4 w-4 mr-2" aria-hidden="true" />
-                New Case
+                Create Case
               </Button>
             </DialogTrigger>
             
             <DialogContent className="sm:max-w-md">
               <DialogHeader>
-                <DialogTitle>Create New Material Case</DialogTitle>
+                <DialogTitle>Create Material Case</DialogTitle>
               </DialogHeader>
               
-              <form onSubmit={handleCreateCase} className="space-y-4">
+              <form onSubmit={handleCreateFormSubmit} className="space-y-4">
                 <div className="space-y-2">
                   <label htmlFor="caseName" className="text-sm font-medium">
                     Case Name
                   </label>
                   <Input
                     id="caseName"
-                    placeholder="Enter case name"
                     value={createFormData.name}
-                    onChange={(e) => setCreateFormData({
-                      ...createFormData,
-                      name: e.target.value
-                    })}
+                    onChange={(e) => handleCreateFormChange('name', e.target.value)}
+                    placeholder="Enter case name"
                     required
                   />
                 </div>
@@ -517,19 +427,16 @@ export const EmployeeCaseManager: React.FC<IEmployeeCaseManagerProps> = ({
                   </label>
                   <Select
                     value={createFormData.employeeId}
-                    onValueChange={(value) => setCreateFormData({
-                      ...createFormData,
-                      employeeId: value
-                    })}
+                    onValueChange={(value) => handleCreateFormChange('employeeId', value)}
                   >
                     <SelectTrigger id="employee">
                       <SelectValue placeholder="Select employee" />
                     </SelectTrigger>
                     <SelectContent>
-                      {/* Replace with actual employee data */}
-                      <SelectItem value="employee1">John Doe</SelectItem>
-                      <SelectItem value="employee2">Jane Smith</SelectItem>
-                      <SelectItem value="employee3">Bob Johnson</SelectItem>
+                      {/* This would typically be populated from an API */}
+                      <SelectItem value="emp1">John Doe</SelectItem>
+                      <SelectItem value="emp2">Jane Smith</SelectItem>
+                      <SelectItem value="emp3">Mike Johnson</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -557,95 +464,228 @@ export const EmployeeCaseManager: React.FC<IEmployeeCaseManagerProps> = ({
       </CardHeader>
       
       <CardContent>
-        {/* Search and filters */}
-        <div className="flex gap-4 mb-6">
-          <div className="relative flex-grow">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" aria-hidden="true" />
-            <Input
-              placeholder="Search cases..."
-              value={searchTerm}
-              onChange={handleSearchChange}
-              className="pl-10"
-              aria-label="Search cases"
-            />
+        <Tabs className="mb-6" value={selectedCaseId || 'none'}>
+          <div className="flex justify-between items-center mb-4">
+            <div className="relative w-64">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" aria-hidden="true" />
+              <Input
+                placeholder="Search cases..."
+                value={searchTerm}
+                onChange={handleSearchChange}
+                className="pl-10"
+                aria-label="Search cases"
+              />
+            </div>
+            
+            {selectedCaseId && (
+              <Dialog open={templateFormOpen} onOpenChange={setTemplateFormOpen}>
+                <DialogTrigger asChild>
+                  <Button variant="outline">
+                    <ArrowRight className="h-4 w-4 mr-2" aria-hidden="true" />
+                    Apply Template
+                  </Button>
+                </DialogTrigger>
+                
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle>Apply Template to Case</DialogTitle>
+                  </DialogHeader>
+                  
+                  <form onSubmit={handleTemplateFormSubmit} className="space-y-4">
+                    <div className="space-y-2">
+                      <label htmlFor="templateSelect" className="text-sm font-medium">
+                        Template
+                      </label>
+                      <Select
+                        value={templateFormData.templateId}
+                        onValueChange={(value) => setTemplateFormData(prev => ({
+                          ...prev,
+                          templateId: value
+                        }))}
+                      >
+                        <SelectTrigger id="templateSelect">
+                          <SelectValue placeholder="Select template" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {isLoadingTemplates ? (
+                            <div className="flex items-center justify-center p-2">
+                              <Spinner size="sm" aria-hidden="true" />
+                              <span className="ml-2">Loading...</span>
+                            </div>
+                          ) : templates.length === 0 ? (
+                            <div className="p-2 text-center text-gray-500">
+                              No templates found
+                            </div>
+                          ) : (
+                            templates.map(template => (
+                              <SelectItem key={template.id} value={template.id}>
+                                {template.name}
+                              </SelectItem>
+                            ))
+                          )}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    
+                    <div className="flex justify-end mt-4">
+                      <Button
+                        type="submit"
+                        variant="primary"
+                        disabled={
+                          applyTemplateMutation.isLoading ||
+                          !templateFormData.templateId
+                        }
+                      >
+                        {applyTemplateMutation.isLoading ? (
+                          <>
+                            <Spinner className="mr-2" size="sm" aria-hidden="true" />
+                            Applying...
+                          </>
+                        ) : (
+                          'Apply Template'
+                        )}
+                      </Button>
+                    </div>
+                  </form>
+                </DialogContent>
+              </Dialog>
+            )}
           </div>
           
-          <Dialog open={templateFormOpen} onOpenChange={setTemplateFormOpen}>
-            <DialogTrigger asChild>
-              <Button variant="outline" disabled={!selectedCaseId}>
-                <ArrowRight className="h-4 w-4 mr-2" aria-hidden="true" />
-                Apply Template
-              </Button>
-            </DialogTrigger>
-            
-            <DialogContent className="sm:max-w-md">
-              <DialogHeader>
-                <DialogTitle>Apply Template to Case</DialogTitle>
-              </DialogHeader>
-              
-              <form onSubmit={handleApplyTemplate} className="space-y-4">
-                <div className="space-y-2">
-                  <label htmlFor="templateSelect" className="text-sm font-medium">
-                    Select Template
-                  </label>
-                  <Select
-                    value={templateFormData.templateId}
-                    onValueChange={(value) => setTemplateFormData({
-                      ...templateFormData,
-                      templateId: value,
-                      caseId: selectedCaseId
-                    })}
-                  >
-                    <SelectTrigger id="templateSelect">
-                      <SelectValue placeholder="Select template" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {isLoadingTemplates ? (
-                        <SelectItem value="loading" disabled>
-                          Loading templates...
-                        </SelectItem>
-                      ) : templates.length === 0 ? (
-                        <SelectItem value="none" disabled>
-                          No templates available
-                        </SelectItem>
-                      ) : (
-                        templates.map(template => (
-                          <SelectItem key={template.id} value={template.id}>
-                            {template.name}
-                          </SelectItem>
-                        ))
-                      )}
-                    </SelectContent>
-                  </Select>
-                  {templateFormData.templateId && (
-                    <p className="text-xs text-gray-500 mt-1">
-                      {templates.find(t => t.id === templateFormData.templateId)?.description || 
-                       'This template will add standard items to the selected case.'}
-                    </p>
-                  )}
+          <TabsList className="w-full flex overflow-x-auto pb-1">
+            {filteredCases.length === 0 ? (
+              <TabsTrigger value="none" disabled className="flex-shrink-0">
+                No Cases Found
+              </TabsTrigger>
+            ) : (
+              filteredCases.map(caseItem => (
+                <TabsTrigger
+                  key={caseItem.id}
+                  value={caseItem.id}
+                  className="flex-shrink-0"
+                  onClick={() => handleCaseSelect(caseItem.id)}
+                >
+                  {caseItem.name} ({caseItem.employeeName})
+                </TabsTrigger>
+              ))
+            )}
+          </TabsList>
+          
+          {/* Case details and inventory */}
+          {selectedCaseId ? (
+            isLoadingSelectedCase ? (
+              <div className="flex justify-center items-center py-10">
+                <Spinner size="lg" aria-hidden="true" />
+                <span className="ml-2">Loading case details...</span>
+              </div>
+            ) : selectedCaseError ? (
+              <div className="flex justify-center items-center py-10 text-red-500">
+                <AlertCircle className="mr-2" aria-hidden="true" />
+                <span>
+                  Error loading case details: {selectedCaseError instanceof Error ? selectedCaseError.message : 'Unknown error'}
+                </span>
+              </div>
+            ) : !selectedCase ? (
+              <div className="py-10 text-center">
+                <Package className="h-16 w-16 mx-auto text-gray-400 mb-4" aria-hidden="true" />
+                <h3 className="text-lg font-medium mb-2">Case Not Found</h3>
+                <p className="text-gray-500">
+                  The selected case could not be found.
+                </p>
+              </div>
+            ) : (
+              <div className="mt-6">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-lg font-medium">
+                    {selectedCase.name} - {selectedCase.employeeName}
+                  </h3>
+                  
+                  <div className="flex space-x-2">
+                    <Button variant="outline" size="sm">
+                      <Edit className="h-4 w-4 mr-2" aria-hidden="true" />
+                      Edit Case
+                    </Button>
+                    <Button variant="outline" size="sm">
+                      <Plus className="h-4 w-4 mr-2" aria-hidden="true" />
+                      Add Item
+                    </Button>
+                  </div>
                 </div>
                 
-                <div className="flex justify-end mt-4">
-                  <Button
-                    type="submit"
-                    variant="primary"
-                    disabled={
-                      applyTemplateMutation.isLoading ||
-                      !templateFormData.templateId ||
-                      !selectedCaseId
-                    }
-                  >
-                    {applyTemplateMutation.isLoading ? (
-                      <>
-                        <Spinner className="mr-2" size="sm" aria-hidden="true" />
-                        Applying...
-                      </>
-                    ) : (
-                      'Apply Template'
-                    )}
-                  </Button>
-                </div>
-              </form>
-            </DialogContent>
-          </Dialog>
-        </div>
+                {selectedCase.items.length === 0 ? (
+                  <div className="py-10 text-center border rounded">
+                    <Package className="h-16 w-16 mx-auto text-gray-400 mb-4" aria-hidden="true" />
+                    <h3 className="text-lg font-medium mb-2">No Items in Case</h3>
+                    <p className="text-gray-500 mb-4">
+                      This case doesn't have any items yet.
+                    </p>
+                    <Button variant="outline">
+                      <Plus className="h-4 w-4 mr-2" aria-hidden="true" />
+                      Add Item
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Material</TableHead>
+                          <TableHead className="w-32 text-right">Quantity</TableHead>
+                          <TableHead className="w-32 text-right">Min. Quantity</TableHead>
+                          <TableHead className="w-24 text-right">Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {selectedCase.items.map(item => (
+                          <TableRow key={item.id} className={
+                            item.minQuantity && item.quantity < item.minQuantity ? 'bg-red-50' : ''
+                          }>
+                            <TableCell>{item.materialName}</TableCell>
+                            <TableCell className="text-right">{item.quantity}</TableCell>
+                            <TableCell className="text-right">{item.minQuantity || '-'}</TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end">
+                                <Button 
+                                  variant="ghost" 
+                                  size="sm"
+                                  aria-label={`Edit ${item.materialName}`}
+                                >
+                                  <Edit className="h-4 w-4" aria-hidden="true" />
+                                </Button>
+                                <Button 
+                                  variant="ghost" 
+                                  size="sm"
+                                  aria-label={`Delete ${item.materialName}`}
+                                >
+                                  <Trash2 className="h-4 w-4 text-red-500" aria-hidden="true" />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </div>
+            )
+          ) : (
+            <div className="py-10 text-center">
+              <Package className="h-16 w-16 mx-auto text-gray-400 mb-4" aria-hidden="true" />
+              <h3 className="text-lg font-medium mb-2">
+                {filteredCases.length === 0 ? 'No Cases Found' : 'Select a Case'}
+              </h3>
+              <p className="text-gray-500">
+                {filteredCases.length === 0 ? 
+                  searchTerm ? 'No cases match your search criteria.' : 'Create a new case to get started.' : 
+                  'Please select a case from the tabs above to view its details.'}
+              </p>
+            </div>
+          )}
+        </Tabs>
+      </CardContent>
+    </Card>
+  );
+};
+
+export default EmployeeCaseManager;
