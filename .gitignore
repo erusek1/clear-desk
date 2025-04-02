@@ -56,3 +56,4 @@ samconfig.toml
 temp/
 tmp/
 .cache/
+.aider*
